@@ -1,0 +1,115 @@
+.page {
+  padding: var(--spacing-lg);
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.domainList {
+  display: flex;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+  flex-wrap: wrap;
+}
+
+.domainCard {
+  flex: 1;
+  min-width: 280px;
+  max-width: 400px;
+}
+
+.section {
+  margin-bottom: var(--spacing-lg);
+}
+
+.sectionTitle {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-sm);
+}
+
+.fieldRow {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: flex-start;
+  margin-bottom: var(--spacing-sm);
+}
+
+.fieldRow > * {
+  flex: 1;
+}
+
+.fieldActions {
+  flex: 0 0 auto !important;
+  padding-top: 4px;
+}
+
+.capRow {
+  margin-bottom: var(--spacing-md);
+  padding: var(--spacing-md);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.capHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-sm);
+}
+
+.weightsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--spacing-sm);
+}
+
+.weightItem {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.weightItem label {
+  min-width: 80px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.promptArea {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.formActions {
+  display: flex;
+  gap: var(--spacing-sm);
+  justify-content: flex-end;
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--spacing-lg);
+}
+
+.emptyState {
+  text-align: center;
+  padding: var(--spacing-xl) 0;
+  color: var(--color-text-secondary);
+}
+
+.jsonPreview {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  max-height: 300px;
+  overflow: auto;
+  padding: var(--spacing-md);
+  background: var(--color-bg-primary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  white-space: pre-wrap;
+  word-break: break-all;
+}

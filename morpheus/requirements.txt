@@ -1,0 +1,13 @@
+# Core
+fastapi
+uvicorn
+pydantic
+python-dotenv
+requests
+
+# MCP Server
+fastmcp
+
+# Optional LLM providers (uncomment as needed)
+# openai
+# anthropic

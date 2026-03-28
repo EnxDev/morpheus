@@ -1,0 +1,124 @@
+.card {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.cardTitle {
+  margin: 0 0 var(--spacing-md) 0 !important;
+  font-size: 14px !important;
+  color: var(--color-text-secondary) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.fieldList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.fieldRow {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  transition: border-color var(--transition-fast);
+}
+
+.fieldRowLow {
+  border-color: var(--color-error);
+  background: rgba(255, 77, 79, 0.04);
+}
+
+.fieldHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.fieldLabel {
+  width: 100px;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.lowTag {
+  flex-shrink: 0;
+  margin-left: var(--spacing-sm);
+}
+
+.fieldValue {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.topValue {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nullValue {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.progress {
+  width: 120px;
+  flex-shrink: 0;
+}
+
+.confidenceLabel {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+  width: 40px;
+  text-align: right;
+}
+
+.hypothesesCollapse {
+  margin-top: var(--spacing-sm);
+  margin-left: calc(100px + var(--spacing-md));
+}
+
+.altLabel {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-xs);
+}
+
+.altList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.altItem {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xs) 0;
+}
+
+.altValue {
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+
+.altConfidence {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
