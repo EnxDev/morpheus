@@ -111,7 +111,7 @@ export default function App() {
       <Layout className={styles.layout}>
         <Header className={styles.header}>
           <Title level={4} className={styles.headerTitle}>
-            Morpheus
+            Morpheus Pipeline Tester
           </Title>
           <div className={styles.headerNav}>
             <Menu
