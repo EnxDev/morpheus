@@ -370,7 +370,7 @@ The UI includes preset queries grouped by scenario:
 The logged-in user is Enzo (Developer). He can see his own data. The system blocks him from accessing other employees' payroll — not because of hardcoded rules, but because the IBAC tuples generated from his intent (`data_subject: "self"`) don't authorize `payroll:all_employees`.
 
 ```bash
-cd demo-app/hr-assistant
+cd morpheus-hr-chatbot-demo
 ./start_demo.sh
 # Then open http://localhost:9000
 ```

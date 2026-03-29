@@ -17,19 +17,19 @@ Both controls can be enabled or disabled independently. Everything is always log
 
 ### HR Assistant Demo — dangerous actions blocked by Control 2 and input sanitizer
 
-![Dangerous actions and prompt injection blocked](demo-app/hr-assistant/docs/images/malicius.png)
+![Dangerous actions and prompt injection blocked](morpheus-hr-chatbot-demo/docs/images/malicius.png)
 
 ### Privilege escalation — unauthorized access denied based on role and IBAC tuples
 
-![Privilege escalation blocked](demo-app/hr-assistant/docs/images/malicius-2.png)
+![Privilege escalation blocked](morpheus-hr-chatbot-demo/docs/images/malicius-2.png)
 
 ### Pipeline Tester — interactive intent debugging
 
-![Morpheus Pipeline Tester](demo-app/hr-assistant/docs/images/morpheus-pipeline-tester.png)
+![Morpheus Pipeline Tester](morpheus-hr-chatbot-demo/docs/images/morpheus-pipeline-tester.png)
 
 ### Domain Configuration — register custom domains with fields, capabilities, and prompts
 
-![Domain Configuration](demo-app/hr-assistant/docs/images/morpheus-pipeline-domain-config.png)
+![Domain Configuration](morpheus-hr-chatbot-demo/docs/images/morpheus-pipeline-domain-config.png)
 
 ---
 
@@ -335,7 +335,7 @@ morpheus/
     ├── test_cases.py          # E2E mock tests
     └── mock_mcp_server.py     # Mock MCP server for proxy testing
 
-src/                               # Frontend (React 19 + TypeScript + Vite)
+morpheus-pipeline-tester/          # Frontend (React 19 + TypeScript + Vite)
 ├── App.tsx                        # Routes: / (Pipeline Tester), /config (Domain Configurator)
 ├── components/
 │   ├── QueryInput/                # Query input with domain selector + preset examples
@@ -352,7 +352,7 @@ src/                               # Frontend (React 19 + TypeScript + Vite)
     ├── intent.ts                  # Intent, Hypothesis, PipelineState types
     └── domain.ts                  # DomainConfig, DomainSummary types
 
-demo-app/hr-assistant/             # HR Assistant demo
+morpheus-hr-chatbot-demo/             # HR Assistant demo
 ├── app.py                         # FastAPI backend + Morpheus integration
 ├── fake_db.py                     # In-memory HR database (12 employees)
 ├── hr_domain.py                   # HR domain config (6 fields, 7 capabilities, match_fields)
@@ -538,7 +538,7 @@ User → HR Chatbot (9000) → Morpheus API (8000) → Morpheus Proxy (5020) →
 ### Quick start
 
 ```bash
-cd demo-app/hr-assistant
+cd morpheus-hr-chatbot-demo
 chmod +x start_demo.sh
 ./start_demo.sh
 ```
