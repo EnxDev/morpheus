@@ -4,7 +4,7 @@ This simulates the MCP tool server of a real company.
 Morpheus MCP Proxy discovers these tools and wraps them.
 
 Run:
-    cd demo-app/hr-assistant
+    cd morpheus-hr-chatbot-demo
     python hr_mcp_server.py
 
 Exposes tools on port 5010 via JSON-RPC (MCP protocol).

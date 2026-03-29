@@ -10,7 +10,7 @@ Run:
     cd morpheus && uvicorn main:app --port 8000
 
     # Terminal 2 — This app
-    cd demo-app/hr-assistant && uvicorn app:app --port 9000
+    cd morpheus-hr-chatbot-demo && uvicorn app:app --port 9000
 
 Then open http://localhost:9000
 """

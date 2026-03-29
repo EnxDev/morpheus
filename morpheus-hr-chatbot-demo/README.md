@@ -32,7 +32,7 @@ uvicorn main:app --port 8000
 ### 2. Start the HR Assistant
 
 ```bash
-cd demo-app/hr-assistant
+cd morpheus-hr-chatbot-demo
 pip install -r requirements.txt
 uvicorn app:app --port 9000
 ```
@@ -83,7 +83,7 @@ The current user is **Enzo** (Developer, Engineering).
 ## Files
 
 ```
-demo-app/hr-assistant/
+morpheus-hr-chatbot-demo/
 ├── app.py              # FastAPI backend + Morpheus integration
 ├── fake_db.py          # In-memory HR database
 ├── hr_domain.py        # Morpheus domain configuration

@@ -3,14 +3,14 @@
 # Starts all 3 components: HR MCP server + Morpheus backend + HR chatbot app
 #
 # Usage:
-#   cd demo-app/hr-assistant
+#   cd morpheus-hr-chatbot-demo
 #   chmod +x start_demo.sh
 #   ./start_demo.sh
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MORPHEUS_DIR="$SCRIPT_DIR/../../morpheus"
+MORPHEUS_DIR="$SCRIPT_DIR/../morpheus"
 
 echo "═══════════════════════════════════════════════════════"
 echo "  Morpheus HR Assistant Demo"
