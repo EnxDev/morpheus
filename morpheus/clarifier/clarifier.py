@@ -188,16 +188,27 @@ def generate_question(field: str, config: DomainConfig | None = None) -> str:
 
     fd = config.get_field(field)
 
+    # Prefer the domain-configured fallback question — it's deterministic,
+    # written in natural language, and avoids LLM leaking technical names.
+    if fd.fallback_question:
+        return fd.fallback_question
+
+    import re as _re
+    label = fd.label or field
+    clean_label = _re.sub(r'^[^\w]+', '', label).strip() or label
+
     try:
+        examples_hint = f" Possible values: {', '.join(fd.examples[:5])}." if fd.examples else ""
         prompt = (
             f"Generate a short, natural clarification question to ask a user "
-            f"about the '{field}' field of their query. "
-            f"The field represents: {fd.description}. "
+            f"about '{clean_label}' in their query. "
+            f"The field represents: {fd.description}.{examples_hint} "
+            f"Use plain language — never use technical names like '{field}'. "
             f"Output ONLY the question, nothing else."
         )
         return get_default_provider().generate(prompt).strip()
     except Exception:
-        return fd.fallback_question or f"Please specify: {field}"
+        return f"Could you clarify the {clean_label}?"
 
 
 def update_intent(
