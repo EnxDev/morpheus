@@ -16,8 +16,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./morpheus-pipeline-tester/*"]
     },
   },
-  "include": ["src"]
+  "include": ["morpheus-pipeline-tester"]
 }

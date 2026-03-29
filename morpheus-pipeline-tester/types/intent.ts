@@ -1,4 +1,4 @@
-// src/types/intent.ts
+// morpheus-pipeline-tester/types/intent.ts
 
 export type PipelineStatus =
   | "idle"
