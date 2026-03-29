@@ -11,6 +11,7 @@ import { PipelineTracker } from "@/components/PipelineTracker/PipelineTracker";
 import { IntentDisplay } from "@/components/IntentDisplay/IntentDisplay";
 import { ClarificationPanel } from "@/components/ClarificationPanel/ClarificationPanel";
 import { ConfirmationStep } from "@/components/ConfirmationStep/ConfirmationStep";
+import { DecisionDisplay } from "@/components/DecisionDisplay/DecisionDisplay";
 import { AuditLog } from "@/components/AuditLog/AuditLog";
 import { DomainConfigurator } from "@/components/DomainConfigurator/DomainConfigurator";
 import { usePipeline } from "@/hooks/usePipeline";
@@ -35,6 +36,17 @@ function PipelineTester() {
 
   const { domains } = useDomains();
   const domainNames = Object.keys(domains);
+
+  // Resolve field metadata from selected domain for human-readable labels
+  const activeDomainMeta = domain && domains[domain]
+    ? domains[domain].fields.map((f) => ({
+        name:                f.name,
+        label:               f.label,
+        description:         f.description,
+        threshold:           f.threshold,
+        ambiguity_threshold: f.ambiguity_threshold,
+      }))
+    : undefined;
 
   const isLoading = state.status === "running";
   const hasError = state.steps.some((s) => s.status === "error");
@@ -70,6 +82,7 @@ function PipelineTester() {
           <IntentDisplay
             intent={state.intent}
             lowConfidence={state.lowConfidence}
+            fieldMeta={activeDomainMeta}
           />
         )}
 
@@ -80,6 +93,7 @@ function PipelineTester() {
             maxIterations={3}
             onAnswer={answerClarification}
             onSkip={() => answerClarification("")}
+            fieldLabels={activeDomainMeta ? Object.fromEntries(activeDomainMeta.map((f) => [f.name, f.label])) : undefined}
           />
         )}
 
@@ -88,6 +102,14 @@ function PipelineTester() {
             intent={state.intent}
             onConfirm={confirmIntent}
             onReject={rejectIntent}
+            fieldMeta={activeDomainMeta}
+          />
+        )}
+
+        {state.status === "done" && state.decisionResult && (
+          <DecisionDisplay
+            result={state.decisionResult}
+            fieldMeta={activeDomainMeta}
           />
         )}
       </div>
