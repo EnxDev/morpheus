@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { API_BASE } from "@/lib/api";
 import {
   Card,
   Button,
@@ -334,7 +335,7 @@ export function DomainConfigurator() {
 
   const handleLoadDomain = async (name: string) => {
     try {
-      const resp = await fetch(`http://localhost:8000/api/domains`);
+      const resp = await fetch(`${API_BASE}/api/domains`);
       const data = await resp.json();
       if (data[name]) {
         // We only have the summary from /api/domains, but we can pre-fill basics

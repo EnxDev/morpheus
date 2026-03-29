@@ -45,11 +45,19 @@ export interface AuditEvent {
   data?:     unknown;
 }
 
+export interface ActionValidation {
+  status:     string;
+  reason:     string;
+  risk_level: string;
+}
+
 export interface DecisionResult {
   action:    string;
   score:     number;
   explained: Record<string, number>;
   dryRun:    boolean;
+  actionValidation?: ActionValidation | null;
+  planReview?:       Record<string, unknown> | null;
 }
 
 export interface PipelineState {

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { DomainConfig, DomainSummary } from "@/types/domain";
-
-const API_BASE = "http://localhost:8000";
+import { API_BASE } from "@/lib/api";
 
 export interface UseDomainsReturn {
   domains: Record<string, DomainSummary>;
