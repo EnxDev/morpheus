@@ -22,7 +22,7 @@ import {
 
 // ─── API Helpers ──────────────────────────────────────────────────────────────
 
-const API_BASE = "http://localhost:8000";
+import { API_BASE } from "@/lib/api";
 
 async function apiFetch<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -47,11 +47,16 @@ interface ParseApiResponse {
   low_confidence: IntentField[];
   valid: boolean;
   errors: string[];
+  suspicious: boolean;
+  sanitizer_flags: string[];
+  questions: Record<string, string>;
 }
 
 interface ClarifyApiResponse {
   intent: Record<string, unknown>;
   low_confidence: IntentField[];
+  question: string | null;
+  next_field: string | null;
 }
 
 interface DecideApiResponse {
@@ -59,6 +64,8 @@ interface DecideApiResponse {
   score: number;
   explained: Record<string, number>;
   audit_log: unknown[];
+  action_validation: { status: string; reason: string; risk_level: string } | null;
+  plan_review: Record<string, unknown> | null;
 }
 
 function apiIntentToFrontend(raw: Record<string, unknown>): SupersetIntent {
@@ -266,6 +273,8 @@ export interface UsePipelineReturn {
 export function usePipeline(useMocks = true): UsePipelineReturn {
   const [state, dispatch] = useReducer(pipelineReducer, INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const originalQueryRef = useRef<string | null>(null);
   const [domain, setDomain] = useState<string | null>(null);
 
   const runStep = useCallback(async (
@@ -300,6 +309,8 @@ export function usePipeline(useMocks = true): UsePipelineReturn {
     const signal = controller.signal;
 
     dispatch({ type: "PIPELINE_STARTED" });
+    sessionIdRef.current = crypto.randomUUID();
+    originalQueryRef.current = query;
 
     if (useMocks) {
       // ─── Mock path ──────────────────────────────────────────────────────
@@ -374,7 +385,7 @@ export function usePipeline(useMocks = true): UsePipelineReturn {
           dispatch({
             type:      "CLARIFICATION_STARTED",
             field:     firstField,
-            question:  MOCK_CLARIFICATION_QUESTIONS[firstField] ?? `Please specify: ${firstField}`,
+            question:  data.questions?.[firstField] ?? `Please specify: ${firstField}`,
             iteration: 1,
           });
         }
@@ -419,6 +430,7 @@ export function usePipeline(useMocks = true): UsePipelineReturn {
           field,
           answer,
           domain,
+          session_id: sessionIdRef.current,
         });
 
         const updatedIntent = apiIntentToFrontend(data.intent);
@@ -429,11 +441,11 @@ export function usePipeline(useMocks = true): UsePipelineReturn {
           dispatch({ type: "STEP_SUCCESS", id: "clarify", durationMs: 0 });
           dispatch({ type: "CONFIRMING" });
         } else {
-          const nextField = remaining[0] as IntentField;
+          const nextField = (data.next_field ?? remaining[0]) as IntentField;
           dispatch({
             type:      "CLARIFICATION_STARTED",
             field:     nextField,
-            question:  MOCK_CLARIFICATION_QUESTIONS[nextField] ?? `Please specify: ${nextField}`,
+            question:  data.question ?? `Please specify: ${nextField}`,
             iteration: iteration + 1,
           });
         }
@@ -461,15 +473,22 @@ export function usePipeline(useMocks = true): UsePipelineReturn {
         console.log("[confirmIntent] POST /api/decide body:", JSON.stringify({ intent: intentDict, domain }));
 
         const data = await runStep("decide", async () => {
-          return apiFetch<DecideApiResponse>("/api/decide", { intent: intentDict, domain });
+          return apiFetch<DecideApiResponse>("/api/decide", {
+            intent: intentDict,
+            domain,
+            session_id: sessionIdRef.current,
+            original_query: originalQueryRef.current,
+          });
         }) as DecideApiResponse;
 
         console.log("[confirmIntent] /api/decide response:", JSON.stringify(data));
         const result: DecisionResult = {
-          action:    data.action ?? "none",
-          score:     data.score,
-          explained: data.explained,
-          dryRun:    true,
+          action:           data.action ?? "none",
+          score:            data.score,
+          explained:        data.explained,
+          dryRun:           true,
+          actionValidation: data.action_validation,
+          planReview:       data.plan_review,
         };
         dispatch({ type: "DECISION_MADE", result });
         console.log("[confirmIntent] DECISION_MADE dispatched:", JSON.stringify(result));
@@ -486,6 +505,8 @@ export function usePipeline(useMocks = true): UsePipelineReturn {
   }, []);
 
   const reset = useCallback(() => {
+    sessionIdRef.current = null;
+    originalQueryRef.current = null;
     dispatch({ type: "RESET" });
   }, []);
 

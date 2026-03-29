@@ -23,7 +23,7 @@ from parser.sanitizer import sanitize
 from parser.session_guard import SessionGuard
 from validator.validator import validate, ValidationResult
 from policies.confidence_policy import check
-from clarifier.clarifier import update_intent
+from clarifier.clarifier import update_intent, generate_question, get_next_field
 from decision_engine.engine import select_action
 from execution.plan import build_plan
 from execution.engine import execute_plan
@@ -116,6 +116,7 @@ class ParseResponse(BaseModel):
     errors: list[str]
     suspicious: bool = False
     sanitizer_flags: list[str] = []
+    questions: dict[str, str] = {}  # field → clarification question
 
 class ClarifyRequest(BaseModel):
     intent: dict
@@ -127,6 +128,8 @@ class ClarifyRequest(BaseModel):
 class ClarifyResponse(BaseModel):
     intent: dict
     low_confidence: list[str]
+    question: str | None = None      # question for next low-confidence field
+    next_field: str | None = None    # which field the question is for
 
 class DecideRequest(BaseModel):
     intent: dict
@@ -203,6 +206,10 @@ async def api_parse(req: ParseRequest):
         "controls_active": controls.to_dict(),
     }, policy_applied="confidence_policy" if controls.input_validation else "bypassed")
 
+    questions: dict[str, str] = {}
+    for field_name in low:
+        questions[field_name] = generate_question(field_name, config)
+
     return ParseResponse(
         intent=intent.to_dict(),
         low_confidence=low,
@@ -210,6 +217,7 @@ async def api_parse(req: ParseRequest):
         errors=result.errors,
         suspicious=sanitization.is_suspicious,
         sanitizer_flags=sanitization.flags,
+        questions=questions,
     )
 
 
@@ -261,9 +269,14 @@ async def api_clarify(req: ClarifyRequest):
 
     low = check(updated, config)
 
+    next_field_name = get_next_field(low, config) if low else None
+    next_question = generate_question(next_field_name, config) if next_field_name else None
+
     return ClarifyResponse(
         intent=updated.to_dict(),
         low_confidence=low,
+        question=next_question,
+        next_field=next_field_name,
     )
 
 
