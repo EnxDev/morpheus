@@ -44,14 +44,40 @@ class MorpheusProxy:
         self._discovery.on_change(self._on_tools_changed)
 
     def _discover_tools(self) -> None:
-        """Connect to real server and dynamically register discovered tools."""
-        discovered = self._discovery.discover()
-        self._tools.clear()
-        for tool in discovered:
-            self._tools[tool.name] = tool
+        """Connect to real server and dynamically register discovered tools.
 
-        # Update policy checker with known tool names
-        self._policy_checker.set_known_tools(set(self._tools.keys()))
+        Build the new tool map and metadata in local variables, then swap
+        all three references atomically (see THREADING NOTE below). This
+        prevents a race where a concurrent check_action sees partially-updated
+        state (e.g. _tools cleared but _tool_metadata still stale) when
+        called from the background poller.
+        """
+        discovered = self._discovery.discover()
+
+        # Build new state in local vars
+        new_tools = {tool.name: tool for tool in discovered}
+        new_names = set(new_tools.keys())
+        new_metadata = {
+            name: {
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+            }
+            for name, tool in new_tools.items()
+        }
+
+        # THREADING NOTE: These assignments rely on CPython's GIL for atomicity.
+        # A single reference assignment (e.g. self._tools = new_tools) is atomic
+        # under the GIL — a concurrent reader sees either the old or new dict,
+        # never a partially-constructed one. If this code is ever ported to a
+        # GIL-free runtime (free-threaded CPython 3.13+, PyPy STM, etc.), these
+        # swaps need a threading.Lock or equivalent barrier.
+        #
+        # Swap order matters: metadata first, tools last. A concurrent check_action
+        # that reads between swaps gets newer metadata with older tools — strictly
+        # more information, never less. No bypass path exists in any interleaving.
+        self._policy_checker.set_tool_metadata(new_metadata)
+        self._policy_checker.set_known_tools(new_names)
+        self._tools = new_tools
 
         self._logger.log("tools_discovered", {
             "server_url": self._real_server_url,
