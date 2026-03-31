@@ -362,6 +362,24 @@ def register(run_fn=run):
         finally:
             provider_mod._provider = old
 
+    # ── Unknown risk requires confirmation ────────────────────────────
+
+    def test_10_45():
+        """Unknown risk tool → blocked at L1 (requires confirmation)."""
+        pc = PolicyChecker()
+        d = pc.check_action("custom_thing", {})
+        assert d.status == "blocked"
+        assert d.risk_level == "unknown"
+        assert "requires confirmation" in d.reason.lower()
+
+    def test_10_46():
+        """Unknown risk, L2 disabled → still blocked at L1 (confirmation is L1)."""
+        pc = PolicyChecker()
+        d = pc.check_action("custom_thing", {}, controls_active={
+            "input_validation": True, "action_validation": True, "coherence_check": False,
+        })
+        assert d.status == "blocked"
+
     # ── Register all tests ──────────────────────────────────────────────
 
     run_fn("10.1", "classify_risk: delete_* → high", test_10_1)
@@ -408,3 +426,5 @@ def register(run_fn=run):
     run_fn("10.42", "LLM parse: invalid response → caught, 0.0", test_10_42)
     run_fn("10.43", "LLM parse: markdown fences → parsed", test_10_43)
     run_fn("10.44", "LLM provider exception → caught, 0.0", test_10_44)
+    run_fn("10.45", "Unknown risk → blocked at L1 (requires confirmation)", test_10_45)
+    run_fn("10.46", "Unknown risk, L2 disabled → still blocked at L1", test_10_46)

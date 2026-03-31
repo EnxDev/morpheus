@@ -62,12 +62,6 @@ DESCRIPTION_RISK_KEYWORDS: dict[str, list[re.Pattern]] = {
     ],
 }
 
-# ── Schema-based risk signals ────────────────────────────────────────────────
-# Fields in inputSchema that hint at destructive operations.
-
-DANGEROUS_SCHEMA_FIELDS = {"confirm", "force", "hard", "cascade", "permanent", "dry_run"}
-
-
 def classify_risk(tool_name: str, description: str = "") -> str:
     """Classify tool risk using name patterns, description keywords, and schema hints.
 
@@ -579,11 +573,11 @@ class PolicyChecker:
                     rule_applied=f"{rule_name}:missing_field",
                 )
 
-        # High risk requires confirmation
-        if risk_level == "high" and rule.requires_confirmation:
+        # Requires confirmation (high risk always, unknown by default)
+        if rule.requires_confirmation:
             return L1Decision(
                 status="blocked",
-                reason=f"High-risk tool '{tool_name}' requires confirmation",
+                reason=f"{risk_level.capitalize()}-risk tool '{tool_name}' requires confirmation",
                 risk_level=risk_level,
                 rule_applied=f"{rule_name}:requires_confirmation",
             )
