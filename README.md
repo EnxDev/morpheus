@@ -1,7 +1,7 @@
 # Morpheus
 
 > **Status:** prototype under active development.
-> Control 1 and Control 2 are functional and tested (148 tests).
+> Control 1 and Control 2 are functional and tested (181 tests, 15 layers).
 > SaaS features (dashboard, multi-tenancy, persistent audit) are not built yet.
 
 > LLMs propose. Morpheus decides.
@@ -122,32 +122,41 @@ This distinction matters. The two levels have different properties.
 
 Fully rule-based. No LLM involved. Always predictable.
 
-**Pattern-based risk classification:**
+**Hybrid risk classification (name + description):**
+
+Risk is classified using two signals, in priority order:
+
+1. **Name patterns** — `fnmatch` against known prefixes (highest priority)
+2. **Description keywords** — regex scan of the tool's description from MCP discovery
 
 ```yaml
 policies:
+  # 1. Name patterns — match tools that follow prefix_action naming
+  #    These only work for tools named like delete_repo, send_email, get_weather.
+  #    MCP tool names are NOT standardized — many servers use different conventions
+  #    (emailSend, removeItem, bulk_erase). Unmatched names fall through to level 2.
   - pattern: ["delete_*", "remove_*", "drop_*", "destroy_*", "purge_*"]
     risk: high
     requires_confirmation: true
 
-  - pattern:
-      [
-        "send_*",
-        "create_*",
-        "update_*",
-        "write_*",
-        "post_*",
-        "approve_*",
-        "request_*",
-        "export_*",
-      ]
+  - pattern: ["send_*", "create_*", "update_*", "write_*", "post_*",
+              "approve_*", "request_*", "export_*"]
     risk: medium
     check_coherence: true
 
-  - pattern:
-      ["get_*", "list_*", "read_*", "fetch_*", "search_*", "query_*", "view_*"]
+  - pattern: ["get_*", "list_*", "read_*", "fetch_*", "search_*",
+              "query_*", "view_*"]
     risk: low
     auto_approve: true
+
+  # 2. Description keywords — catches tools with non-standard names.
+  #    This is the safety net for the majority of real-world MCP servers
+  #    that don't follow verb_noun naming.
+  #    "erase_records" with description "Permanently removes all data" → high
+  #    "finalize" with description "Publish the report" → medium
+  #    "inspect_data" with description "Read-only retrieval" → low
+  #
+  # If neither name nor description matches → "unknown" (coherence check + confirmation)
 ```
 
 **Explicit policy rules:**
@@ -161,13 +170,17 @@ rules:
     require_intent_field: "audience"
 ```
 
-Morpheus does not know what `delete_repo` does on GitHub.  
-It knows it starts with `delete_` — high risk — and blocks until confirmed.  
-This is always deterministic.
+Name patterns are a first line of defense for tools that follow standard naming.
+For the rest — which is the majority of real MCP servers — the description-based
+classification is the primary mechanism. A tool called `bulk_erase` or `emailSend`
+won't match any name pattern but will be caught if its description mentions
+"permanently removes" or "send".
+If neither signal matches, the tool is classified as `unknown` and requires
+both coherence check and confirmation before execution.
 
 ### Level 2 — LLM-Assisted Coherence Check (optional)
 
-Checks whether the tool call parameters are semantically coherent  
+Checks whether the tool call parameters are semantically coherent
 with the intent the user originally validated.
 
 ```
@@ -184,26 +197,38 @@ Coherence check (LLM call):
   → confidence: 0.12 → below threshold 0.70 → blocked
 ```
 
-**Important:** this level is not fully deterministic.  
-It uses an LLM call to reason about semantic coherence between  
-the validated intent and the tool parameters.
+**Three defense layers** protect the coherence check from manipulation:
 
-The LLM returns a **confidence score**, not a decision.  
-The final block/approve decision is deterministic:  
+| Layer | Type | What it does |
+|-------|------|-------------|
+| **D1 — Argument sanitization** | Deterministic | Scans all tool parameter values (including nested objects and lists) for prompt injection patterns. If injection is detected, returns score 0.0 immediately — the LLM is never called. |
+| **D2 — Schema pre-validation** | Deterministic | Validates arguments against the tool's declared `inputSchema` from MCP discovery. Type mismatches or missing required fields return score 0.0 — the LLM is never called. |
+| **D3 — Hardened prompt** | **Probabilistic** | Structural delimiters (`<arguments>` tags) and anti-injection framing. Instructs the LLM that injection attempts inside arguments are evidence of low coherence. |
+
+**D1 and D2 are deterministic and provide the real security guarantees.**
+D3 is defense-in-depth — its effectiveness depends on the LLM model used.
+Do not rely on D3 alone for security-critical decisions.
+
+The LLM returns a **confidence score**, not a decision.
+The final block/approve decision is deterministic:
 it is based on a configurable threshold, not on the LLM's judgment.
 
 ```
+Arguments → D1 (sanitize)   → injection? → score 0.0, LLM never called
+          → D2 (schema)     → invalid?   → score 0.0, LLM never called
+          → D3 (hardened prompt + LLM)    → score → threshold decides
+
 coherence_score < threshold → blocked
 coherence_score ≥ threshold → approved
 ```
 
-This level can be disabled independently. When disabled, actions are  
+This level can be disabled independently. When disabled, actions are
 logged as `bypassed` — not silently skipped.
 
-**Why use an LLM here?**  
-A fully deterministic coherence check would require domain-specific lookup tables  
-(e.g. "which emails belong to team_sales?"). That is possible but not generic.  
-The LLM-assisted check works across any domain without pre-configured mappings.  
+**Why use an LLM here?**
+A fully deterministic coherence check would require domain-specific lookup tables
+(e.g. "which emails belong to team_sales?"). That is possible but not generic.
+The LLM-assisted check works across any domain without pre-configured mappings.
 The tradeoff is explicit: less determinism, more coverage. Both are configurable.
 
 ---
@@ -255,17 +280,20 @@ If a control is off and something executes, the audit trail records it explicitl
 ```
 User Input
   → [CONTROL 1]
-      Parser
+      Sanitizer (prompt injection, SQL injection, XSS, Unicode normalization)
+      → Parser
       → Confidence Policy
       → Validator
       → Clarifier (max 3 iterations)
+      → Session Guard (cross-iteration anomaly detection)
   → validated prompt
   → LLM
   → LLM calls tool via MCP (tools/call)
   → [CONTROL 2: Action Validation]
       MorpheusProxy
-        → Level 1: pattern matching + explicit rules (deterministic)
-        → Level 2: coherence check (LLM-assisted, optional)
+        → Level 1: hybrid risk classification (name + description)
+                    + explicit rules (deterministic)
+        → Level 2: coherence check (D1 sanitize → D2 schema → D3 LLM, optional)
   → [Plan Review]
       Structural checks (step types, ordering)
       Constraint checks (timeout, retries, side-effect count)
@@ -331,7 +359,7 @@ morpheus/
 │   └── adapters/
 │       └── fastapi_middleware.py  # ASGI middleware
 └── tests/
-    ├── run_all_tests.py       # Full test suite (148 tests, 15 layers)
+    ├── run_all_tests.py       # Full test suite (181 tests, 15 layers)
     ├── test_cases.py          # E2E mock tests
     └── mock_mcp_server.py     # Mock MCP server for proxy testing
 

@@ -45,18 +45,31 @@ proxy.refresh_tools()
 
 ## Risk Classification
 
-Tools are classified by name pattern:
+Tools are classified using a hybrid approach (name patterns → description keywords → unknown):
 
-| Risk | Patterns | Default Behavior |
-|------|----------|-----------------|
-| High | `delete_*`, `remove_*`, `drop_*`, `destroy_*`, `purge_*` | Blocked (requires confirmation) |
-| Medium | `send_*`, `create_*`, `update_*`, `write_*`, `post_*`, `approve_*`, `request_*`, `export_*` | Coherence check required |
-| Low | `get_*`, `list_*`, `read_*`, `fetch_*`, `search_*`, `query_*`, `view_*` | Auto-approved |
-| Unknown | No pattern match | Coherence check + confirmation |
+| Risk | Name Patterns | Description Keywords | Default Behavior |
+|------|--------------|---------------------|-----------------|
+| High | `delete_*`, `remove_*`, `drop_*`, `destroy_*`, `purge_*` | "permanently", "irreversible", "destructive", "cannot be undone" | Blocked (requires confirmation) |
+| Medium | `send_*`, `create_*`, `update_*`, `write_*`, `post_*`, `approve_*`, `request_*`, `export_*` | "create", "modify", "publish", "send", "deploy" | Coherence check required |
+| Low | `get_*`, `list_*`, `read_*`, `fetch_*`, `search_*`, `query_*`, `view_*` | "read-only", "retrieve", "idempotent" | Auto-approved |
+| Unknown | No match on name or description | — | Coherence check + confirmation |
+
+Name patterns have highest priority. Tool descriptions and input schemas are
+obtained from MCP discovery and passed to the policy checker automatically.
 
 ## Coherence Check
 
-Compares tool call parameters against the validated user intent:
+Compares tool call parameters against the validated user intent.
+
+Three defense layers protect the coherence check from prompt injection:
+
+| Layer | Type | Effect |
+|-------|------|--------|
+| **D1 — Argument sanitization** | Deterministic | Scans parameter values for injection patterns. Blocks before LLM. |
+| **D2 — Schema pre-validation** | Deterministic | Validates arguments against tool's `inputSchema`. Blocks before LLM. |
+| **D3 — Hardened prompt** | Probabilistic | Structural delimiters + anti-injection framing. Defense-in-depth only. |
+
+D1 and D2 are the real security guarantees. D3 depends on the LLM model and should not be relied upon alone.
 
 ```python
 # Intent says audience = "team_sales"
@@ -64,6 +77,9 @@ Compares tool call parameters against the validated user intent:
 
 # Intent says scope = "Q1 2025"
 # Tool call uses date_range = "2020-2024" -> BLOCKED (incoherent)
+
+# Tool params contain "ignore all previous instructions" -> BLOCKED by D1 (LLM never called)
+# Tool params fail inputSchema validation -> BLOCKED by D2 (LLM never called)
 ```
 
 ## Custom Policies

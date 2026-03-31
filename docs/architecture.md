@@ -9,11 +9,11 @@ User Input
   |
   v
 [Control 1: Input Validation]
-  Parser -> Validator -> Confidence Check -> Clarifier -> Decision Engine
+  Sanitizer -> Parser -> Validator -> Confidence Check -> Clarifier -> Session Guard -> Decision Engine
   |
   v
 [Control 2: Action Validation]
-  MCP Proxy -> Risk Classification -> Coherence Check -> Forward/Block
+  MCP Proxy -> Risk Classification (name + description) -> Coherence Check (D1 sanitize → D2 schema → D3 LLM) -> Forward/Block
   |
   v
 Real MCP Tool Server
@@ -133,14 +133,26 @@ graph LR
 
 ## Risk Classification
 
-```
-Tool Name -> fnmatch against patterns -> Risk Level
+Hybrid classification using three signals in priority order:
 
-  delete_*, remove_*, drop_*, destroy_*, purge_*                          -> HIGH   (blocked, requires confirmation)
-  send_*, create_*, update_*, write_*, post_*, approve_*, request_*, export_*  -> MEDIUM (coherence check required)
-  get_*, list_*, read_*, fetch_*, search_*, query_*, view_*              -> LOW    (auto-approved)
-  (no match)                                      -> UNKNOWN (coherence check + confirmation)
 ```
+1. Tool Name -> fnmatch against patterns -> Risk Level (highest priority)
+
+  delete_*, remove_*, drop_*, destroy_*, purge_*                              -> HIGH   (blocked, requires confirmation)
+  send_*, create_*, update_*, write_*, post_*, approve_*, request_*, export_* -> MEDIUM (coherence check required)
+  get_*, list_*, read_*, fetch_*, search_*, query_*, view_*                   -> LOW    (auto-approved)
+
+2. Tool Description -> keyword regex (if name didn't match)
+
+  "permanently", "irreversible", "destructive", "cannot be undone"  -> HIGH
+  "create", "modify", "publish", "send", "deploy"                   -> MEDIUM
+  "read-only", "retrieve", "idempotent", "no side effects"          -> LOW
+
+3. No match on name or description                                  -> UNKNOWN (coherence check + confirmation)
+```
+
+Name patterns always take priority. A `get_data` tool with a destructive
+description is still classified as LOW because the name pattern matches first.
 
 ## Audit Trail
 
@@ -203,7 +215,7 @@ morpheus/
       fastapi_middleware.py  # ASGI middleware
   mcp_server.py          # MCP tools for Claude Desktop/VS Code
   tests/
-    run_all_tests.py     # Full test suite (148 tests, 15 layers)
+    run_all_tests.py     # Full test suite (181 tests, 15 layers)
     test_cases.py        # E2E mock tests
     mock_mcp_server.py   # Mock MCP server for proxy testing
 ```
