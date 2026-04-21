@@ -3,17 +3,21 @@
 The LLM calls morpheus/[tool_name], Morpheus checks policy,
 then either forwards to real_server/[tool_name] or blocks + logs.
 Transparent to the calling LLM — same tool names and schemas.
+
+Wire format is delegated to a ``DownstreamTransport`` (see
+``proxy/transport.py``). Callers can pass a URL — in which case a
+plain-JSON-RPC transport is constructed for backwards compatibility —
+or inject a pre-built transport (e.g. ``StreamableHttpTransport``).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-import requests
-
 from audit.logger import AuditLogger
 from proxy.discovery import ToolDiscovery, ToolDefinition
 from proxy.policy_checker import PolicyChecker, ActionDecision
+from proxy.transport import DownstreamTransport, PlainJsonRpcTransport
 
 
 class MorpheusProxy:
@@ -27,13 +31,21 @@ class MorpheusProxy:
 
     def __init__(
         self,
-        real_server_url: str,
+        real_server_or_transport: str | DownstreamTransport,
         policy_checker: PolicyChecker | None = None,
         logger: AuditLogger | None = None,
     ) -> None:
-        self._real_server_url = real_server_url.rstrip("/")
+        if isinstance(real_server_or_transport, DownstreamTransport):
+            self._transport = real_server_or_transport
+            self._real_server_url = getattr(real_server_or_transport, "server_url", "")
+        else:
+            self._real_server_url = real_server_or_transport.rstrip("/")
+            self._transport = PlainJsonRpcTransport(self._real_server_url)
         self._logger = logger or AuditLogger()
-        self._discovery = ToolDiscovery(self._real_server_url)
+        # Share the same transport instance with ToolDiscovery so a single
+        # downstream session (when streamable-http is used) serves both the
+        # initial discovery and every subsequent tool call.
+        self._discovery = ToolDiscovery(self._transport)
         self._policy_checker = policy_checker or PolicyChecker()
 
         # Discover tools from the real server
@@ -223,20 +235,8 @@ class MorpheusProxy:
             }
 
     def _forward_call(self, tool_name: str, arguments: dict) -> Any:
-        """Forward a tools/call to the real MCP server via JSON-RPC."""
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments,
-            },
-            "id": 1,
-        }
-        response = requests.post(self._real_server_url, json=payload, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("result", data)
+        """Forward a tools/call via the configured downstream transport."""
+        return self._transport.call_tool(tool_name, arguments)
 
     @property
     def logger(self) -> AuditLogger:

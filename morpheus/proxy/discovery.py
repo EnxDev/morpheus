@@ -1,6 +1,11 @@
 """Dynamic tool discovery — connects to a real MCP server and calls tools/list.
 
 No tools are hardcoded. Everything comes from the real server.
+
+Wire format is delegated to a ``DownstreamTransport``. By default — and
+always, for code paths that pass a URL string — the plain JSON-RPC
+transport is used, preserving the original behaviour. Callers that want
+the streamable-HTTP transport construct it explicitly and inject it.
 """
 
 from __future__ import annotations
@@ -9,7 +14,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Callable
 
-import requests
+from proxy.transport import DownstreamTransport, PlainJsonRpcTransport
 
 
 @dataclass
@@ -23,10 +28,25 @@ class ToolDefinition:
 
 
 class ToolDiscovery:
-    """Connects to a real MCP server and discovers its tools via tools/list."""
+    """Connects to a real MCP server and discovers its tools via tools/list.
 
-    def __init__(self, server_url: str, timeout: int = 30) -> None:
-        self._server_url = server_url.rstrip("/")
+    Accepts either a URL string (constructs a default
+    :class:`PlainJsonRpcTransport` — backwards-compatible with every
+    existing caller) or a pre-built transport instance.
+    """
+
+    def __init__(
+        self,
+        server_or_transport: str | DownstreamTransport,
+        timeout: int = 30,
+    ) -> None:
+        if isinstance(server_or_transport, DownstreamTransport):
+            self._transport = server_or_transport
+            # Expose the URL for audit/status when the transport advertises one.
+            self._server_url = getattr(server_or_transport, "server_url", "")
+        else:
+            self._server_url = server_or_transport.rstrip("/")
+            self._transport = PlainJsonRpcTransport(self._server_url, timeout=timeout)
         self._timeout = timeout
         self._on_change_callbacks: list[Callable[[], None]] = []
         self._watch_thread: threading.Thread | None = None
@@ -36,29 +56,18 @@ class ToolDiscovery:
     def server_url(self) -> str:
         return self._server_url
 
+    @property
+    def transport(self) -> DownstreamTransport:
+        return self._transport
+
     def discover(self) -> list[ToolDefinition]:
-        """Send tools/list JSON-RPC request to the real server.
+        """Ask the transport for the downstream tool catalogue.
 
-        Request:
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-
-        Parses response: result.tools -> list of tool objects.
-        Each tool includes: name, description, inputSchema, outputSchema (if present).
+        The transport returns raw MCP-shape dicts; this method wraps them
+        in :class:`ToolDefinition` objects. Wire details (JSON-RPC envelope
+        vs streamable-HTTP session) live inside the transport.
         """
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "tools/list",
-            "id": 1,
-        }
-
-        response = requests.post(self._server_url, json=payload, timeout=self._timeout)
-        response.raise_for_status()
-
-        data = response.json()
-
-        # MCP response: {"jsonrpc": "2.0", "result": {"tools": [...]}, "id": 1}
-        result = data.get("result", data)
-        tools_raw = result.get("tools", []) if isinstance(result, dict) else []
+        tools_raw = self._transport.list_tools()
 
         tools = []
         for t in tools_raw:
