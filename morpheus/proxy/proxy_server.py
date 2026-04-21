@@ -48,6 +48,12 @@ class MorpheusProxy:
         self._discovery = ToolDiscovery(self._transport)
         self._policy_checker = policy_checker or PolicyChecker()
 
+        # Hook the transport's re-init callback so session re-inits are
+        # visible in the audit trail. The transport exposes ``_on_reinit``
+        # as a plain method overridable here — see transport.py for why
+        # it is not a constructor callback.
+        self._transport._on_reinit = self._on_session_reinit
+
         # Discover tools from the real server
         self._tools: dict[str, ToolDefinition] = {}
         self._discover_tools()
@@ -103,6 +109,18 @@ class MorpheusProxy:
             "server_url": self._real_server_url,
         })
         self._discover_tools()
+
+    def _on_session_reinit(self) -> None:
+        """Called by the transport after a one-shot session re-init.
+
+        Only fired by transports that hold long-lived sessions (currently
+        just ``StreamableHttpTransport``). Lets operators see session
+        churn in the audit trail without changing any existing event shape.
+        """
+        self._logger.log("downstream_session_reinitialized", {
+            "server_url": self._real_server_url,
+            "transport": self._transport.name,
+        })
 
     def watch_changes(self) -> None:
         """Start watching for tools/list_changed from the real server."""
@@ -214,6 +232,7 @@ class MorpheusProxy:
                 "tool": tool_name,
                 "status": decision.status,
                 "success": True,
+                "transport": self._transport.name,
             })
             return {
                 "status": decision.status,
@@ -224,6 +243,7 @@ class MorpheusProxy:
             self._logger.log("tool_call_failed", {
                 "tool": tool_name,
                 "error": str(e),
+                "transport": self._transport.name,
             })
             return {
                 "status": "error",
