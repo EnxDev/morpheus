@@ -8,6 +8,13 @@ requests
 # MCP Server
 fastmcp
 
+# MCP SDK — used by proxy/transport.py for the streamable-HTTP downstream.
+# Currently also pulled in transitively by fastmcp; pinned directly here so
+# the dependency is not lost if fastmcp changes its own requirements.
+# Upper bound <2 is a deliberate guard against a future v2 breaking change
+# in the streamable-HTTP client API.
+mcp>=1.26,<2
+
 # Optional LLM providers (uncomment as needed)
 # openai
 # anthropic
