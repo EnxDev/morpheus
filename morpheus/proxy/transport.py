@@ -22,6 +22,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+import requests
+
 
 # Transport identifiers accepted on CLI / env / config. Kept here (not in
 # http_proxy.py) so the abstraction module owns its own vocabulary.
@@ -82,3 +84,78 @@ class DownstreamTransport(ABC):
         ``close`` MUST be idempotent.
         """
         return None
+
+
+# ── PlainJsonRpcTransport ────────────────────────────────────────────────────
+
+# Default HTTP timeout for plain JSON-RPC requests. Matches the value the
+# legacy code used in ``discovery.py`` (constructor default) and
+# ``proxy_server._forward_call`` (inline literal).
+_DEFAULT_TIMEOUT_SECONDS = 30
+
+
+class PlainJsonRpcTransport(DownstreamTransport):
+    """The original Morpheus-custom JSON-RPC-over-HTTP dialect.
+
+    Sends a bare JSON-RPC 2.0 envelope as the POST body to a single
+    downstream URL, and parses ``result.tools`` / ``result`` directly from
+    the response JSON. No session negotiation, no SSE, no Accept header
+    dance. This is what ``hr_mcp_server.py`` and ``tests/mock_mcp_server.py``
+    speak.
+
+    This class is a pure extraction of the logic previously inlined in
+    :mod:`proxy.discovery` and :mod:`proxy.proxy_server`. Behaviour is
+    byte-identical — same payload shape, same fixed ``"id": 1``, same
+    30-second timeout, same error-raising contract.
+    """
+
+    name = TRANSPORT_PLAIN_JSONRPC
+
+    def __init__(self, server_url: str, timeout: int = _DEFAULT_TIMEOUT_SECONDS) -> None:
+        self._server_url = server_url.rstrip("/")
+        self._timeout = timeout
+
+    @property
+    def server_url(self) -> str:
+        return self._server_url
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        """Send a ``tools/list`` request and return the raw tool dicts.
+
+        Matches the legacy ``ToolDiscovery.discover`` wire payload:
+        ``{"jsonrpc": "2.0", "method": "tools/list", "id": 1}``.
+        """
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "id": 1,
+        }
+
+        response = requests.post(self._server_url, json=payload, timeout=self._timeout)
+        response.raise_for_status()
+
+        data = response.json()
+
+        # MCP response: {"jsonrpc": "2.0", "result": {"tools": [...]}, "id": 1}
+        result = data.get("result", data)
+        tools_raw = result.get("tools", []) if isinstance(result, dict) else []
+        return list(tools_raw)
+
+    def call_tool(self, tool_name: str, arguments: dict) -> Any:
+        """Send a ``tools/call`` request and return the ``result`` field.
+
+        Matches the legacy ``MorpheusProxy._forward_call`` payload shape.
+        """
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments,
+            },
+            "id": 1,
+        }
+        response = requests.post(self._server_url, json=payload, timeout=self._timeout)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("result", data)
