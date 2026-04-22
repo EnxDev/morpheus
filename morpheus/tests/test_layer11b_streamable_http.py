@@ -774,6 +774,91 @@ def _test_D4_shutdown_sends_terminate(mock):
     )
 
 
+# ── Group E — Session-loss error code guard ────────────────────────────────
+
+@_with_session_mock
+def _test_E1_sdk_still_emits_expected_session_loss_code(mock):
+    """Protects against SDK drift on the session-terminated error code.
+
+    StreamableHttpTransport pins _MCP_SESSION_TERMINATED_CODE = 32600
+    because the SDK hardcodes that literal in
+    streamable_http.py:_send_session_terminated_error without exporting
+    a named constant. If a future SDK version changes the code, or
+    introduces an exported named constant, this test forces us to
+    notice.
+
+    Procedure:
+      1. Stand up the minimal streamable-HTTP mock and arm it to drop
+         the next request after initialize succeeds.
+      2. Drive the SDK directly (no Morpheus transport) through an
+         initialize + list_tools round-trip, catch the resulting
+         McpError, and read its error.code.
+      3. Assert the code matches our local constant.
+      4. Separately assert that mcp.types still has no exported
+         constant named like a session-termination code — if that ever
+         changes, this test fails and we switch to the import.
+    """
+    import asyncio as _asyncio
+    import mcp.types as _mcp_types
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared.exceptions import McpError
+
+    from proxy.transport import _MCP_SESSION_TERMINATED_CODE
+
+    captured = {"code": None, "message": None}
+
+    async def _drive():
+        async with streamable_http_client(mock.url()) as (read, write, _sid):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                # Drain the initialized notification that initialize() fires
+                # but does not await — otherwise our kill_next flip could
+                # land on the notification rather than the list_tools request.
+                # The notification lands as a 202 Accepted and is ignored
+                # by the SDK; we just need it out of the way.
+                await _asyncio.sleep(0.2)
+                mock.kill_next = True
+                try:
+                    await session.list_tools()
+                except McpError as e:
+                    captured["code"] = e.error.code
+                    captured["message"] = e.error.message
+
+    # Run on a short-lived dedicated loop — this test is self-contained
+    # and does not need the StreamableHttpTransport's long-lived thread.
+    loop = _asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_asyncio.wait_for(_drive(), timeout=15.0))
+    finally:
+        loop.close()
+
+    assert captured["code"] is not None, (
+        "expected an McpError from the SDK after the mock dropped the "
+        "session; got nothing"
+    )
+    assert captured["code"] == _MCP_SESSION_TERMINATED_CODE, (
+        f"SDK session-terminated code drifted: expected "
+        f"{_MCP_SESSION_TERMINATED_CODE}, got {captured['code']!r} "
+        f"(message={captured['message']!r}). Update "
+        f"proxy/transport.py:_MCP_SESSION_TERMINATED_CODE and re-read the "
+        f"SDK to see whether it now exports a named constant we should "
+        f"import instead of pinning a literal."
+    )
+
+    # Drift check: if the SDK starts exporting a session-termination
+    # constant we should prefer that over our literal. Fail loudly to
+    # force the update.
+    sdk_constants = [
+        n for n in dir(_mcp_types)
+        if ("SESSION" in n.upper() and ("TERMIN" in n.upper() or "LOST" in n.upper()))
+    ]
+    assert not sdk_constants, (
+        f"mcp.types now exports {sdk_constants} — replace the literal "
+        f"_MCP_SESSION_TERMINATED_CODE with this named constant."
+    )
+
+
 def register(run_fn=run):
     section("Layer 11b — MCP Proxy: Streamable-HTTP Transport")
 
@@ -799,3 +884,6 @@ def register(run_fn=run):
     run_fn("D.2", "simulated session loss → one-shot reinit + reinit audit event", _test_D2_session_loss_triggers_reinit)
     run_fn("D.3", "second consecutive session loss → error surfaces, no infinite retry", _test_D3_second_loss_surfaces_error)
     run_fn("D.4", "transport.close() sends a DELETE to the session URL", _test_D4_shutdown_sends_terminate)
+
+    # Group E — Session-loss error code guard (protects against SDK drift)
+    run_fn("E.1", "SDK still emits code 32600 on session loss", _test_E1_sdk_still_emits_expected_session_loss_code)
