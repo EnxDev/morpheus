@@ -15,6 +15,12 @@ Run:
 
     # With API key (recommended):
     MORPHEUS_PROXY_KEY=my-secret python proxy/http_proxy.py --real-server http://localhost:5010
+
+    # Against a streamable-HTTP MCP server (e.g. FastMCP, Superset MCP):
+    python proxy/http_proxy.py --real-server http://localhost:5008/mcp --transport streamable_http
+
+    # Or via env var (same effect as --transport):
+    MORPHEUS_DOWNSTREAM_TRANSPORT=streamable_http python proxy/http_proxy.py --real-server http://localhost:5008/mcp
 """
 
 from __future__ import annotations
