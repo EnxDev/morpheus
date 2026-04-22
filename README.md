@@ -361,6 +361,7 @@ morpheus/
 ├── proxy/
 │   ├── proxy_server.py        # MCP proxy with dynamic discovery
 │   ├── discovery.py           # tools/list + tool mirroring
+│   ├── transport.py           # Downstream transports: plain_jsonrpc + streamable_http
 │   ├── policy_checker.py      # Level 1 (deterministic) + Level 2 (LLM-assisted)
 │   ├── mcp_bridge.py          # MCP proxy bridge (stdio, for Claude Desktop)
 │   └── http_proxy.py          # HTTP proxy service (for any integration)
