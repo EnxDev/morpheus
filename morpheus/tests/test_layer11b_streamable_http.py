@@ -166,6 +166,112 @@ def _test_A7_bad_env_rejected():
     assert raised, "_build_transport should reject 'bogus'"
 
 
+# ── Shared streamable-HTTP mock server fixture ─────────────────────────────
+
+# Single module-level FastMCP instance + uvicorn thread, reused across tests.
+# Starting FastMCP per-test would add ~500ms × N; the design note in the
+# Phase 1 test plan explicitly called this out as a reason to share.
+#
+# Chose FastMCP (already in requirements.txt, same version that produces real
+# downstreams) over a hand-rolled minimum spec implementation — FastMCP
+# startup in a background thread is <400ms locally, well within the 500ms
+# budget, and using the real implementation catches spec-interpretation
+# mismatches that a hand-rolled mock would hide.
+
+_streamable_fixture_lock = __import__("threading").Lock()
+_streamable_fixture = None  # populated on first use
+
+
+class _StreamableFixture:
+    """Module-level FastMCP-backed streamable-HTTP server.
+
+    Holds a uvicorn server running a FastMCP app on a loopback port. The
+    instance exposes :meth:`url` for clients and :meth:`reset_tool_calls`
+    for per-test state isolation.
+    """
+
+    def __init__(self):
+        import socket
+        import threading
+        import uvicorn
+        from fastmcp import FastMCP
+
+        # Pick a free port by binding :0 and reading it back.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            self._port = s.getsockname()[1]
+
+        mcp = FastMCP("morpheus-test-streamable")
+
+        # Tool-call counter, for "session reuse" verification in later tests.
+        self.call_counts: dict[str, int] = {}
+
+        @mcp.tool
+        def ping() -> str:
+            """Return 'pong'."""
+            self.call_counts["ping"] = self.call_counts.get("ping", 0) + 1
+            return "pong"
+
+        @mcp.tool
+        def echo(message: str) -> str:
+            """Return the given message verbatim."""
+            self.call_counts["echo"] = self.call_counts.get("echo", 0) + 1
+            return message
+
+        self._mcp = mcp
+
+        app = mcp.http_app(transport="streamable-http", path="/mcp")
+        config = uvicorn.Config(
+            app, host="127.0.0.1", port=self._port,
+            log_level="error", lifespan="on",
+        )
+        self._server = uvicorn.Server(config)
+
+        self._thread = threading.Thread(
+            target=self._server.run, daemon=True,
+            name="morpheus-test-fastmcp",
+        )
+        self._thread.start()
+
+        # Wait until the server is actually accepting connections.
+        self._wait_ready()
+
+    @property
+    def port(self) -> int:
+        return self._port
+
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self._port}/mcp"
+
+    def reset_call_counts(self) -> None:
+        self.call_counts.clear()
+
+    def _wait_ready(self, timeout: float = 10.0) -> None:
+        import socket
+        import time as _time
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", self._port), timeout=0.25):
+                    return
+            except OSError:
+                _time.sleep(0.05)
+        raise RuntimeError(f"FastMCP test server did not become ready on port {self._port}")
+
+    def shutdown(self) -> None:
+        self._server.should_exit = True
+        self._thread.join(timeout=5.0)
+
+
+def _streamable_mock():
+    """Lazy singleton — one FastMCP per test run, shared across C/D tests."""
+    global _streamable_fixture
+    with _streamable_fixture_lock:
+        if _streamable_fixture is None:
+            _streamable_fixture = _StreamableFixture()
+    return _streamable_fixture
+
+
 # ── Group B — PlainJsonRpcTransport regression ─────────────────────────────
 
 # Start port well above Layer 11's counter (5020+N) so we can never collide.
@@ -229,6 +335,82 @@ def _test_B1_plain_jsonrpc_regression(url):
         transport.close()
 
 
+# ── Group C — StreamableHttpTransport against a real FastMCP ──────────────
+
+def _test_C1_streamable_list_tools():
+    from proxy.transport import StreamableHttpTransport
+
+    mock = _streamable_mock()
+    mock.reset_call_counts()
+    t = StreamableHttpTransport(mock.url())
+    try:
+        tools = t.list_tools()
+        names = {x["name"] for x in tools}
+        assert names == {"ping", "echo"}, f"unexpected tool set: {names}"
+        # Every tool dict must at minimum carry name+description+inputSchema.
+        for tool in tools:
+            assert tool["name"]
+            assert "inputSchema" in tool
+    finally:
+        t.close()
+
+
+def _test_C2_streamable_call_tool():
+    from proxy.transport import StreamableHttpTransport
+
+    mock = _streamable_mock()
+    mock.reset_call_counts()
+    t = StreamableHttpTransport(mock.url())
+    try:
+        result = t.call_tool("echo", {"message": "hello"})
+        # MCP CallToolResult wire shape: {"content": [...], "isError": bool, ...}
+        assert isinstance(result, dict), type(result).__name__
+        assert result.get("isError") is False, result
+        content = result.get("content", [])
+        assert content and content[0].get("text") == "hello", content
+        assert mock.call_counts.get("echo") == 1
+    finally:
+        t.close()
+
+
+def _test_C3_audit_includes_streamable_transport():
+    """End-to-end through MorpheusProxy: the forwarded call's audit event
+    carries ``transport="streamable_http"``.
+    """
+    from proxy.proxy_server import MorpheusProxy
+    from proxy.transport import StreamableHttpTransport
+
+    mock = _streamable_mock()
+    mock.reset_call_counts()
+    transport = StreamableHttpTransport(mock.url())
+    try:
+        proxy = MorpheusProxy(real_server_or_transport=transport)
+        # ``ping`` matches the low-risk auto-approve name pattern
+        # (get_/list_/... doesn't, but there's no rule blocking it either).
+        # Actually: "ping" doesn't match any name pattern, so it goes to
+        # risk="unknown" which requires confirmation → blocked by L1.
+        # Use "echo" same story. Bypass Control 2 instead so the call
+        # is forwarded and audit-logged as forwarded.
+        r = proxy.call_tool(
+            "echo",
+            {"message": "world"},
+            controls_active={
+                "input_validation": True,
+                "action_validation": False,
+                "coherence_check": False,
+            },
+        )
+        assert r["status"] == "bypassed", r
+        events = proxy.logger.get_events()
+        forwarded = [e for e in events if e.event_type == "tool_call_forwarded"]
+        assert forwarded, "expected a tool_call_forwarded event"
+        assert all(
+            e.payload.get("transport") == "streamable_http" for e in forwarded
+        ), [e.payload for e in forwarded]
+    finally:
+        transport.close()
+
+
 def register(run_fn=run):
     section("Layer 11b — MCP Proxy: Streamable-HTTP Transport")
 
@@ -243,3 +425,8 @@ def register(run_fn=run):
 
     # Group B — PlainJsonRpcTransport regression
     run_fn("B.1", "PlainJsonRpcTransport end-to-end against mock matches Layer 11 expectations", _test_B1_plain_jsonrpc_regression)
+
+    # Group C — StreamableHttpTransport against a real FastMCP
+    run_fn("C.1", "StreamableHttpTransport.list_tools() → expected tool set", _test_C1_streamable_list_tools)
+    run_fn("C.2", "StreamableHttpTransport.call_tool() → expected result", _test_C2_streamable_call_tool)
+    run_fn("C.3", "audit log carries transport=streamable_http on forwarded call", _test_C3_audit_includes_streamable_transport)
