@@ -10,8 +10,10 @@ for the design rationale these tests protect.
 """
 
 import os
+import time
 
 from tests.harness import run, section
+from tests.mock_mcp_server import start_mock_server
 
 
 # ── Group A — Transport selection (no network) ─────────────────────────────
@@ -164,6 +166,69 @@ def _test_A7_bad_env_rejected():
     assert raised, "_build_transport should reject 'bogus'"
 
 
+# ── Group B — PlainJsonRpcTransport regression ─────────────────────────────
+
+# Start port well above Layer 11's counter (5020+N) so we can never collide.
+_plain_port_counter = 5200
+
+
+def _with_plain_mock(fn):
+    def wrapper():
+        global _plain_port_counter
+        port = _plain_port_counter
+        _plain_port_counter += 1
+        server, _thread = start_mock_server(port)
+        time.sleep(0.3)
+        try:
+            fn(f"http://127.0.0.1:{port}")
+        finally:
+            server.shutdown()
+    return wrapper
+
+
+@_with_plain_mock
+def _test_B1_plain_jsonrpc_regression(url):
+    """End-to-end: MorpheusProxy over the explicit PlainJsonRpcTransport
+    against the existing mock produces the same results Layer 11 asserts.
+
+    This duplicates some of Layer 11's coverage on purpose — Layer 11
+    exercises the implicit default path (URL passed directly), this one
+    exercises the explicit path where the caller constructs the transport.
+    Both must behave identically.
+    """
+    from proxy.proxy_server import MorpheusProxy
+    from proxy.transport import PlainJsonRpcTransport
+
+    transport = PlainJsonRpcTransport(url)
+    try:
+        proxy = MorpheusProxy(real_server_or_transport=transport)
+
+        # Discovery: matches Layer 11 test 11.5
+        tools = proxy.get_proxied_tools()
+        names = {t["name"] for t in tools}
+        assert names == {"send_email", "get_weather", "read_file", "delete_repo"}
+
+        # Forwarded call: matches Layer 11 test 11.6
+        r = proxy.call_tool("get_weather", {"location": "Rome"})
+        assert r["status"] == "approved"
+        assert "result" in r
+
+        # Blocked call: matches Layer 11 test 11.7
+        r = proxy.call_tool("delete_repo", {"repo_name": "test"})
+        assert r["status"] == "blocked"
+        assert r["result"]["isError"] is True
+
+        # Audit events include the transport field (new in Phase 2)
+        events = proxy.logger.get_events()
+        forwarded = [e for e in events if e.event_type == "tool_call_forwarded"]
+        assert forwarded, "expected at least one tool_call_forwarded event"
+        assert all(e.payload.get("transport") == "plain_jsonrpc" for e in forwarded), (
+            "all forwarded events should carry transport=plain_jsonrpc"
+        )
+    finally:
+        transport.close()
+
+
 def register(run_fn=run):
     section("Layer 11b — MCP Proxy: Streamable-HTTP Transport")
 
@@ -175,3 +240,6 @@ def register(run_fn=run):
     run_fn("A.5", "flag overrides env when both present", _test_A5_flag_overrides_env)
     run_fn("A.6", "unknown flag value → argparse SystemExit(2)", _test_A6_bad_flag_rejected)
     run_fn("A.7", "unknown env value → _build_transport ValueError", _test_A7_bad_env_rejected)
+
+    # Group B — PlainJsonRpcTransport regression
+    run_fn("B.1", "PlainJsonRpcTransport end-to-end against mock matches Layer 11 expectations", _test_B1_plain_jsonrpc_regression)
