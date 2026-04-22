@@ -15,10 +15,15 @@ LLM -> morpheus/send_email(params)
 
 ## Setup
 
-```python
-from morpheus.proxy import MorpheusProxy
+The Morpheus project runs from inside the `morpheus/` package directory
+(`cd morpheus && python …`), so the top-level Python package name for
+imports is `proxy`, not `morpheus.proxy`.
 
-# Connect to a real MCP server
+```python
+from proxy import MorpheusProxy  # re-exported from proxy.proxy_server
+
+# Connect to a real MCP server. A URL string defaults to the
+# plain_jsonrpc transport — see "Downstream transports" below.
 proxy = MorpheusProxy("http://localhost:5010")
 
 # See what tools were discovered
@@ -35,9 +40,63 @@ result = proxy.call_tool(
 print(result["status"])  # "approved", "blocked", or "bypassed"
 ```
 
+## Downstream transports
+
+The proxy speaks two downstream wire formats, selected at construction
+time or — when running the HTTP proxy as a process — via a CLI flag or
+env var.
+
+| Transport | Identifier | Use when |
+|---|---|---|
+| Morpheus JSON-RPC over HTTP | `plain_jsonrpc` (default) | The downstream is a simple server that accepts a bare JSON-RPC POST (the HR demo, `tests/mock_mcp_server.py`, other Morpheus-style servers). |
+| MCP streamable-HTTP | `streamable_http` | The downstream implements the MCP spec's streamable-HTTP transport (FastMCP in streamable mode, Superset MCP, the official MCP reference servers). Includes `initialize` + `Mcp-Session-Id` + `Accept: text/event-stream`. |
+
+On the `streamable_http` path the transport holds a single session open
+for the proxy's lifetime, reuses it across calls, re-initializes once
+transparently on session loss, and issues a best-effort `DELETE` on
+shutdown. Every tool-call audit event records which transport was used.
+
+### Selecting a transport — HTTP proxy
+
+```bash
+# Plain JSON-RPC (default — no flag needed)
+python proxy/http_proxy.py --real-server http://localhost:5010
+
+# Streamable HTTP (for FastMCP-style servers)
+python proxy/http_proxy.py \
+  --real-server http://localhost:5008/mcp \
+  --transport streamable_http
+
+# Or via env var
+MORPHEUS_DOWNSTREAM_TRANSPORT=streamable_http \
+  python proxy/http_proxy.py --real-server http://localhost:5008/mcp
+```
+
+### Selecting a transport — programmatic
+
+The `MorpheusProxy` constructor accepts either a URL (implicitly
+`plain_jsonrpc`, for backwards compatibility) or a pre-built
+`DownstreamTransport` instance:
+
+```python
+from proxy import MorpheusProxy
+from proxy.transport import StreamableHttpTransport
+
+transport = StreamableHttpTransport("http://localhost:5008/mcp")
+proxy = MorpheusProxy(real_server_or_transport=transport)
+# ... use the proxy normally ...
+transport.close()  # best-effort session terminate
+```
+
+See [streamable-http-transport.md](streamable-http-transport.md) for the
+design rationale, the session lifecycle model, and the SDK-compatibility
+notes.
+
 ## Dynamic Discovery
 
-The proxy calls `tools/list` on the real MCP server when initialized. No tools are hardcoded. You can refresh at any time:
+The proxy calls `tools/list` on the real MCP server when initialized
+(via whichever transport is in use). No tools are hardcoded. You can
+refresh at any time:
 
 ```python
 proxy.refresh_tools()
@@ -85,7 +144,7 @@ D1 and D2 are the real security guarantees. D3 depends on the LLM model and shou
 ## Custom Policies
 
 ```python
-from morpheus.proxy.policy_checker import PolicyChecker, PolicyRule
+from proxy.policy_checker import PolicyChecker, PolicyRule
 
 checker = PolicyChecker()
 checker.add_rule(PolicyRule(
@@ -113,7 +172,7 @@ When IBAC tuples are configured for a capability, the proxy verifies each tool c
 Sensitive resources (e.g., `payroll:ceo`) require exact tuple match — wildcards are blocked:
 
 ```python
-from morpheus.policies.ibac import DeterministicEvaluator
+from policies.ibac import DeterministicEvaluator
 
 evaluator = DeterministicEvaluator(
     sensitive_resources={"payroll:ceo", "data:all_employees"}
