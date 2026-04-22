@@ -1,6 +1,6 @@
 # Streamable-HTTP Transport for the Morpheus Proxy
 
-**Status:** design (Phase 1). Not yet implemented.
+**Status:** implemented. Phase 2 (implementation) and Phase 3 (tests) complete on branch `feat/streamable-http-downstream`. See the "Implementation addendum" at the bottom of this document for deviations from the original design.
 **Branch:** `feat/streamable-http-downstream`
 **Scope:** the downstream leg of the Morpheus HTTP Proxy only. The `/proxy/*`
 REST surface, Control 1, IBAC, Plan Review, and the stdio `mcp_bridge.py` are
@@ -321,3 +321,97 @@ All new tests must pass without requiring external services.
 | Audit shape                       | Additive only (`transport` field, new event)     |
 | Test framework                    | No pytest. Sync asserts + `asyncio.run`          |
 | Backward compatibility            | Byte-identical on default code path              |
+
+---
+
+## Implementation addendum (post-Phase 3)
+
+The body of this document is preserved as a historical record of
+pre-implementation thinking. The notes below list the places where the
+landed code differs — or goes beyond — what the design specified, and why.
+
+### Session lifecycle mechanics
+
+The design said "one shared session per proxy, reused across calls." That
+remains true, but the mechanism required more work than the design
+implied. The SDK's `streamable_http_client` and `ClientSession` are both
+`@asynccontextmanager`s whose contexts own the event loop, streams, and
+httpx client — closing the context tears everything down, and you cannot
+re-enter a closed context later. Keeping a session live across sync
+calls therefore required a dedicated background thread running its own
+`asyncio` event loop, with an `AsyncExitStack` held open on that loop for
+the transport's lifetime. Every `list_tools` / `call_tool` submits a
+coroutine from the caller thread via `asyncio.run_coroutine_threadsafe`.
+
+The Phase 2.0 SDK notes ([docs/sdk-notes-phase2.md](./sdk-notes-phase2.md))
+flagged this before implementation; the design doc itself did not.
+
+### Async/sync bridge choice
+
+The design allowed either `anyio.from_thread.run` or "a per-transport
+event loop running in a background thread." We chose the latter using
+raw `asyncio` (not anyio), because the proxy's other paths are stdlib-only
+and an anyio portal object would have added a dependency surface without
+behavioural benefit. Documented inline in
+[morpheus/proxy/transport.py](../morpheus/proxy/transport.py) and in the
+Step 4 commit message.
+
+### Session-terminated error code pinned as a local literal
+
+The design assumed the SDK would expose a named constant for the
+"Session terminated" JSON-RPC error code (`-32600`). It does not — the
+SDK hardcodes the integer at `mcp/client/streamable_http.py:519`. We
+pinned it in `morpheus/proxy/transport.py` as
+`_MCP_SESSION_TERMINATED_CODE` with a citation comment. Test `E.1` in
+layer 11b asserts at runtime that the SDK still emits this exact code,
+so a future SDK drift fails loudly with a pointer to the file and
+constant to update. The test also guards against the SDK starting to
+export a named constant we should prefer — if `mcp.types` ever grows a
+`SESSION_*TERMIN*` or `*LOST*` name, the same test fails with
+instructions to switch to the import.
+
+### `_on_reinit` hook shape
+
+The design did not specify how session-re-init audit events would be
+plumbed between the transport and the proxy's `AuditLogger`. We chose a
+no-op overridable method on `StreamableHttpTransport` (`_on_reinit`) that
+the proxy monkey-patches during construction — the transport module
+stays unaware of `AuditLogger`, and the audit concern stays in
+`proxy_server.py`. A constructor callback was rejected as awkward because
+construction order (transport first, then proxy, then logger) would have
+required a mutable callback slot anyway.
+
+### Audit events shipped
+
+The design promised additive-only audit changes: a `transport` field on
+existing tool-call events, and a new `downstream_session_reinitialized`
+event. Both shipped. One event the design did not call out but that
+ended up worth having: `downstream_transport_selected`, emitted once at
+proxy startup recording which transport was chosen. It made test C.3
+easier to reason about and is cheap.
+
+### Test framework
+
+The design pre-committed to stop if `asyncio.run` inside sync test
+bodies proved untenable. It didn't need to — `StreamableHttpTransport`
+never calls `asyncio.run`, and the test that does drive the SDK directly
+(E.1) uses a short-lived `asyncio.new_event_loop()` + `run_until_complete`
+that cohabits cleanly with the existing sync harness. No pytest or
+pytest-asyncio was introduced. The Group E race between the SDK's
+unawaited `notifications/initialized` and our `kill_next` flip was
+resolved with a 0.2s sleep, not with a harness change.
+
+### Mock server(s) in tests
+
+Phase 3 used FastMCP as-is for the "happy path" streamable-HTTP tests
+(Group C) — its startup cost (~400ms) fit within the test-plan budget.
+For the session-loss scenarios (Groups D.2–D.4), FastMCP provided no
+convenient "drop this session on command" switch, so we added a
+purpose-built minimal streamable-HTTP mock
+([morpheus/tests/test_layer11b_streamable_http.py](../morpheus/tests/test_layer11b_streamable_http.py))
+that implements only the surface the SDK actually drives. The design
+doc's test plan said "defaulting to FastMCP; fall back to hand-rolled
+only if FastMCP startup is too slow or too stateful" — the actual
+outcome is "both, because their strengths are complementary." Flagged
+for future readers so nobody removes the hand-rolled mock assuming
+FastMCP can replace it.
