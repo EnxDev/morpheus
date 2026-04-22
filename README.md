@@ -110,7 +110,35 @@ The proxy uses the MCP standard's `tools/list` to discover tools dynamically:
 6. On tools/list_changed notification: re-discovers automatically
 ```
 
-This works with any MCP server — present or future — without configuration.
+### Downstream transports
+
+The proxy supports two downstream wire formats, selected via the
+`--transport` flag (or `MORPHEUS_DOWNSTREAM_TRANSPORT` env var):
+
+| Transport | When to use | Default |
+|---|---|---|
+| `plain_jsonrpc` | Simple servers that accept a bare JSON-RPC POST (the HR demo, `tests/mock_mcp_server.py`, other Morpheus-style servers). | ✅ |
+| `streamable_http` | MCP-spec-compliant servers that require `initialize` + `Mcp-Session-Id` + `Accept: text/event-stream` (FastMCP in streamable mode, Superset MCP, the official MCP reference servers). | |
+
+```bash
+# Plain JSON-RPC (default — no flag needed)
+python proxy/http_proxy.py --real-server http://localhost:5010
+
+# Streamable HTTP (for FastMCP-style servers)
+python proxy/http_proxy.py \
+  --real-server http://localhost:5008/mcp \
+  --transport streamable_http
+
+# Or via env var
+MORPHEUS_DOWNSTREAM_TRANSPORT=streamable_http \
+  python proxy/http_proxy.py --real-server http://localhost:5008/mcp
+```
+
+Every tool-call audit event records which transport was used. Sessions
+are held open across calls on the `streamable_http` path and re-initialized
+once, transparently, on session loss. See
+[docs/streamable-http-transport.md](docs/streamable-http-transport.md)
+for the design rationale.
 
 ---
 
