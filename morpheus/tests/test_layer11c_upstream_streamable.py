@@ -381,6 +381,108 @@ def _test_B4_dev_mode_open(fixture):
     assert seen == {"send_email", "get_weather", "read_file", "delete_repo"}
 
 
+# ── Group E — Stateful vs stateless ────────────────────────────────────────
+
+@_with_live_proxy(stateless=False, expose_admin_tools=False)
+def _test_E1_stateful_session_id_present(fixture):
+    """Stateful default: server includes Mcp-Session-Id on initialize."""
+    import asyncio
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    seen_session_ids: list[str | None] = []
+
+    async def go():
+        transport = StreamableHttpTransport(fixture.mcp_url())
+        async with Client(transport) as c:
+            await c.list_tools()
+            seen_session_ids.append(transport.get_session_id())
+            await c.list_tools()
+            seen_session_ids.append(transport.get_session_id())
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(asyncio.wait_for(go(), timeout=10.0))
+    finally:
+        loop.close()
+
+    assert seen_session_ids[0] is not None, seen_session_ids
+    # Same session reused across two consecutive list_tools.
+    assert seen_session_ids[0] == seen_session_ids[1], seen_session_ids
+
+
+@_with_live_proxy(stateless=True, expose_admin_tools=False)
+def _test_E2_stateless_no_session_id(fixture):
+    """Stateless mode: server does NOT issue an Mcp-Session-Id."""
+    import asyncio
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    sid: list[str | None] = []
+
+    async def go():
+        transport = StreamableHttpTransport(fixture.mcp_url())
+        async with Client(transport) as c:
+            await c.list_tools()
+            sid.append(transport.get_session_id())
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(asyncio.wait_for(go(), timeout=10.0))
+    finally:
+        loop.close()
+
+    assert sid[0] is None, f"stateless mode must not issue a session id, got {sid[0]!r}"
+
+
+# ── Group F — Management tools toggle ──────────────────────────────────────
+
+@_with_live_proxy(expose_admin_tools=True)
+def _test_F1_admin_tools_default_present(fixture):
+    """Default: tools/list over MCP includes the three admin tools."""
+    seen = _client_list_tools(fixture.mcp_url())
+    for admin in ("set_validated_intent", "get_proxy_status", "get_proxy_audit"):
+        assert admin in seen, f"expected {admin} in {seen}"
+
+
+@_with_live_proxy(expose_admin_tools=False)
+def _test_F2_admin_tools_suppressed(fixture):
+    """expose_admin_tools=False: the three admin tools are NOT in tools/list."""
+    seen = _client_list_tools(fixture.mcp_url())
+    for admin in ("set_validated_intent", "get_proxy_status", "get_proxy_audit"):
+        assert admin not in seen, f"unexpected {admin} in {seen}"
+
+
+def _test_F3_admin_toggle_is_local_to_mcp_endpoint():
+    """Suppression is endpoint-local: it must not affect any REST behaviour.
+
+    No live server needed — verify by introspection that
+    expose_admin_tools=False does not modify anything in the REST
+    code path (no globals touched, no /proxy/* route changed).
+    """
+    from proxy import http_proxy
+    from proxy.proxy_server import MorpheusProxy
+    from proxy.upstream import UpstreamMcp
+    from tests.mock_mcp_server import start_mock_server
+
+    # Snapshot REST endpoint paths.
+    before = {r.path for r in http_proxy.app.routes if hasattr(r, "path")}
+
+    server, _t = start_mock_server(5450)
+    time.sleep(0.3)
+    try:
+        proxy = MorpheusProxy("http://127.0.0.1:5450")
+        # Both modes leave REST routes unchanged — what changes is the
+        # FastMCP catalogue inside UpstreamMcp, never http_proxy.app.
+        UpstreamMcp(proxy, expose_admin_tools=True)
+        after_on = {r.path for r in http_proxy.app.routes if hasattr(r, "path")}
+        UpstreamMcp(proxy, expose_admin_tools=False)
+        after_off = {r.path for r in http_proxy.app.routes if hasattr(r, "path")}
+        assert before == after_on == after_off
+    finally:
+        server.shutdown()
+
+
 def _test_B5_rest_auth_unchanged():
     """Sanity check: _check_auth is still the gate on REST endpoints.
 
@@ -439,3 +541,8 @@ def register(run_fn=run):
     run_fn("B.3", "proxy_key set + Authorization: Bearer → passes", _test_B3_auth_bearer_passes)
     run_fn("B.4", "proxy_key empty → dev mode, all requests pass", _test_B4_dev_mode_open)
     run_fn("B.5", "REST _check_auth remains the gate on /proxy/* endpoints", _test_B5_rest_auth_unchanged)
+    run_fn("E.1", "stateful default: same Mcp-Session-Id across consecutive calls", _test_E1_stateful_session_id_present)
+    run_fn("E.2", "stateless: no Mcp-Session-Id issued", _test_E2_stateless_no_session_id)
+    run_fn("F.1", "admin tools exposed by default in tools/list", _test_F1_admin_tools_default_present)
+    run_fn("F.2", "expose_admin_tools=False suppresses admin tools in tools/list", _test_F2_admin_tools_suppressed)
+    run_fn("F.3", "admin-tools toggle is local to MCP endpoint (REST routes unchanged)", _test_F3_admin_toggle_is_local_to_mcp_endpoint)

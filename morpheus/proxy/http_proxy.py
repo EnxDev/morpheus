@@ -344,10 +344,39 @@ def main():
             "transport, required for servers like FastMCP-in-streamable mode."
         ),
     )
+    parser.add_argument(
+        "--mcp-path",
+        default=os.environ.get("MORPHEUS_MCP_PATH", "/mcp/"),
+        help="Path to mount the upstream MCP server endpoint (default: /mcp/)",
+    )
+    parser.add_argument(
+        "--mcp-stateless",
+        action="store_true",
+        default=_truthy(os.environ.get("MORPHEUS_MCP_STATELESS", "")),
+        help=(
+            "Run the upstream MCP server in stateless mode (each POST is a "
+            "fresh transport, no session tracking). Default: stateful."
+        ),
+    )
+    parser.add_argument(
+        "--no-admin-mcp-tools",
+        action="store_true",
+        default=_truthy(os.environ.get("MORPHEUS_NO_ADMIN_MCP_TOOLS", "")),
+        help=(
+            "Suppress the three management MCP tools (set_validated_intent, "
+            "get_proxy_status, get_proxy_audit). Default: exposed."
+        ),
+    )
     args = parser.parse_args()
 
     try:
-        init_proxy(args.real_server, args.transport)
+        init_proxy(
+            args.real_server,
+            args.transport,
+            mcp_path=args.mcp_path,
+            mcp_stateless=args.mcp_stateless,
+            expose_admin_mcp_tools=not args.no_admin_mcp_tools,
+        )
     except ValueError as exc:
         # Unknown transport value coming via the env var (argparse's
         # choices= already guards the CLI path).
@@ -358,10 +387,17 @@ def main():
     print(f"  Real server: {args.real_server}", file=sys.stderr)
     print(f"  Transport:   {args.transport}", file=sys.stderr)
     print(f"  Proxy port:  http://localhost:{args.port}", file=sys.stderr)
+    print(f"  MCP path:    {args.mcp_path} ({'stateless' if args.mcp_stateless else 'stateful'})", file=sys.stderr)
+    print(f"  Admin tools: {'suppressed' if args.no_admin_mcp_tools else 'exposed'}", file=sys.stderr)
     print(f"  Discovered:  {_proxy.tool_count} tools", file=sys.stderr)
     print(f"  Auth:        {'API key required' if PROXY_API_KEY else 'OPEN (set MORPHEUS_PROXY_KEY)'}", file=sys.stderr)
 
     uvicorn.run(app, host="0.0.0.0", port=args.port)
+
+
+def _truthy(value: str) -> bool:
+    """Standard truthy-string parser for env vars: 1 / true / yes (any case)."""
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 if __name__ == "__main__":
