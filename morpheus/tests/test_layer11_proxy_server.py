@@ -147,6 +147,35 @@ def _test_11_12():
     assert "response_size_warning" in events
 
 
+@_with_mock_server
+def _test_11_13(url):
+    """add_tools_changed_listener: registered callback fires on tool re-discovery."""
+    from proxy.proxy_server import MorpheusProxy
+    proxy = MorpheusProxy(url)
+    fired = []
+    proxy.add_tools_changed_listener(lambda: fired.append(True))
+    # Trigger a re-discovery — same code path the polling loop uses.
+    proxy._on_tools_changed()
+    assert fired == [True]
+
+
+@_with_mock_server
+def _test_11_14(url):
+    """add_tools_changed_listener: listener exception is caught + audited."""
+    from proxy.proxy_server import MorpheusProxy
+    proxy = MorpheusProxy(url)
+
+    def boom():
+        raise RuntimeError("listener failed on purpose")
+
+    proxy.add_tools_changed_listener(boom)
+    # Should not raise — the proxy must absorb listener errors so a buggy
+    # subscriber cannot break the discovery loop or other subscribers.
+    proxy._on_tools_changed()
+    events = [e.event_type for e in proxy.logger.get_events()]
+    assert "tools_changed_listener_failed" in events
+
+
 def register(run_fn=run):
     section("Layer 11 — MCP Proxy: Server + Discovery")
 
@@ -162,3 +191,5 @@ def register(run_fn=run):
     run_fn("11.10", "Response size guard: truncates oversized response", _test_11_10)
     run_fn("11.11", "Response size guard: passes small response unchanged", _test_11_11)
     run_fn("11.12", "Response size guard: warns at 80% threshold", _test_11_12)
+    run_fn("11.13", "add_tools_changed_listener: callback fires on re-discovery", _test_11_13)
+    run_fn("11.14", "add_tools_changed_listener: listener exception caught + audited", _test_11_14)
