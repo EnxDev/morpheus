@@ -30,6 +30,64 @@ if TYPE_CHECKING:
 _DEFAULT_MOUNT_PATH = "/mcp/"
 
 
+class ProxyKeyAuthMiddleware:
+    """ASGI middleware enforcing the same proxy-key check as the REST endpoints.
+
+    Wraps an inner ASGI app. On each HTTP request:
+
+    - ``proxy_key`` empty → pass through unchanged (parity with the
+      REST dev-mode behaviour in :func:`http_proxy._check_auth`).
+    - ``X-Proxy-Key: <key>`` matches → pass through.
+    - ``Authorization: Bearer <key>`` matches → pass through.
+    - Otherwise → respond 401 with a small JSON body, never reach the
+      inner app.
+
+    Scoped to the MCP mount; the existing ``_check_auth`` per-request
+    helper continues to guard ``/proxy/*`` exactly as before.
+    """
+
+    def __init__(self, app, proxy_key: str) -> None:
+        self._app = app
+        self._proxy_key = proxy_key
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            # WebSocket / lifespan messages: pass straight through —
+            # auth applies to HTTP requests only.
+            await self._app(scope, receive, send)
+            return
+
+        if not self._proxy_key:
+            # Dev mode: no key configured, accept everything.
+            await self._app(scope, receive, send)
+            return
+
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1")
+            for k, v in scope.get("headers", [])
+        }
+        provided = headers.get("x-proxy-key")
+        if provided is None:
+            authz = headers.get("authorization", "")
+            if authz.startswith("Bearer "):
+                provided = authz[len("Bearer "):]
+
+        if provided == self._proxy_key:
+            await self._app(scope, receive, send)
+            return
+
+        body = b'{"error":"unauthorized"}'
+        await send({
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
 def _extract_text(result: Any) -> str:
     """Extract a flat text representation from an MCP tool result.
 
@@ -83,6 +141,7 @@ class UpstreamMcp:
         mount_path: str = _DEFAULT_MOUNT_PATH,
         control_manager: "ControlManager | None" = None,
         intent_provider: Callable[[], dict | None] | None = None,
+        intent_setter: Callable[[dict], None] | None = None,
     ) -> None:
         """Build the upstream MCP endpoint around a MorpheusProxy.
 
@@ -103,6 +162,7 @@ class UpstreamMcp:
         self._mount_path = mount_path
         self._control_manager = control_manager
         self._intent_provider = intent_provider
+        self._intent_setter = intent_setter
 
         # Build the FastMCP instance.
         self._mcp: FastMCP = FastMCP(
@@ -119,6 +179,11 @@ class UpstreamMcp:
         # latest get_proxied_tools() output. Admin tools are tracked
         # separately because they are static for the proxy's lifetime.
         self._registered_proxied_tools: set[str] = set()
+
+        # The FastMCP-built Starlette ASGI sub-app. Lazily constructed
+        # by ``asgi_app`` / ``lifespan_context`` so simple introspection
+        # tests don't pay the http_app cost.
+        self._asgi_app = None
 
         self._register_proxied_tools()
         if self._expose_admin_tools:
@@ -281,23 +346,41 @@ class UpstreamMcp:
             "_handle_tools_changed is implemented in Commit 6"
         )
 
-    # ── ASGI integration (real bodies land in Commit 4) ──────────────
+    # ── ASGI integration ──────────────────────────────────────────────
+
+    def _build_asgi_app(self):
+        """Build (and cache) the FastMCP-backed Starlette ASGI sub-app.
+
+        Subtle: the sub-app's *internal* route is fixed at ``/`` so
+        FastAPI can mount it at the user-visible ``mount_path`` without
+        the path doubling up (the spec route then resolves to
+        ``mount_path`` end-to-end). FastMCP defaults to ``path="/mcp/"``
+        which would put the route at ``mount_path + "/mcp/"`` —
+        clients would have to hit ``/mcp/mcp/`` and that is exactly the
+        case we don't want.
+        """
+        if self._asgi_app is None:
+            self._asgi_app = self._mcp.http_app(
+                transport="streamable-http",
+                path="/",
+                stateless_http=self._stateless,
+            )
+        return self._asgi_app
 
     @property
     def asgi_app(self):
-        """The mountable Starlette ASGI sub-app for FastAPI.mount(...).
-
-        Real implementation in Commit 4.
-        """
-        raise NotImplementedError("asgi_app is implemented in Commit 4")
+        """The mountable Starlette ASGI sub-app for ``FastAPI.mount(...)``."""
+        return self._build_asgi_app()
 
     def lifespan_context(self, app):
-        """Async context manager threading FastMCP's session-manager
-        lifespan through the FastAPI parent's ``lifespan=`` parameter.
+        """Return the async context manager the FastAPI parent must enter.
 
-        Real implementation in Commit 4.
+        Without this, FastMCP's StreamableHTTPSessionManager.run() is
+        never entered and the first /mcp/ request fails with
+        "Task group is not initialized". See design doc §8 for the
+        footgun discussion.
         """
-        raise NotImplementedError("lifespan_context is implemented in Commit 4")
+        return self._build_asgi_app().router.lifespan_context(app)
 
     # ── Read-only accessors used by tests and http_proxy.py ──────────
 
