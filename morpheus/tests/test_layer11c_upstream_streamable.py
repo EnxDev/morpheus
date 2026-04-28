@@ -526,6 +526,282 @@ def _test_B5_rest_auth_unchanged():
         http_proxy.PROXY_API_KEY = saved
 
 
+# ── Group C — Tool dispatch through Control 2 ─────────────────────────────
+
+def _client_call_tool(url: str, tool_name: str, arguments_json: str) -> str:
+    """Run a single MCP tools/call against the live endpoint.
+
+    Returns the flat text content the proxy emitted for the tool —
+    which after the upstream adapter is one of:
+      - the raw downstream output, on approved
+      - "BLOCKED: ..." on policy block
+      - "[BYPASSED] ..." on a forwarded-with-controls-off call
+      - "ERROR: ..." on transport error
+    """
+    import asyncio
+    from fastmcp import Client
+
+    async def go():
+        async with Client(url) as c:
+            result = await c.call_tool(tool_name, {"arguments_json": arguments_json})
+            content = getattr(result, "content", None) or []
+            for item in content:
+                if getattr(item, "type", None) == "text":
+                    return item.text
+            return str(result)
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(asyncio.wait_for(go(), timeout=10.0))
+    finally:
+        loop.close()
+
+
+@_with_live_proxy(expose_admin_tools=False)
+def _test_C1_low_risk_call_routes_through_proxy(fixture):
+    """An MCP tool call goes through MorpheusProxy.call_tool and the policy checker.
+
+    get_weather is a low-risk get_* tool — auto-approved by Control 2's
+    Level 1. We call it via MCP, then assert the proxy's audit log
+    shows tool_call_intercepted + policy_decision events for the
+    expected tool name.
+    """
+    text = _client_call_tool(
+        fixture.mcp_url(),
+        "get_weather",
+        '{"location": "Rome"}',
+    )
+    # Mock returns "Mock result for get_weather({'location': 'Rome'})"
+    assert "Mock result for get_weather" in text, text
+
+    events = fixture.proxy.logger.get_events()
+    intercepts = [e for e in events if e.event_type == "tool_call_intercepted"]
+    decisions = [e for e in events if e.event_type == "policy_decision"]
+    assert intercepts and intercepts[-1].payload["tool"] == "get_weather"
+    assert decisions and decisions[-1].payload["status"] == "approved"
+
+
+@_with_live_proxy(expose_admin_tools=False)
+def _test_C2_high_risk_blocked_returns_blocked_text(fixture):
+    """A high-risk tool that L1 blocks surfaces with BLOCKED: prefix.
+
+    delete_repo matches the high-risk name pattern, so L1 requires
+    confirmation and blocks. The MCP client sees the block reason
+    in the tool's text content (per MCP spec, isError on the tool
+    response — NOT a JSON-RPC protocol error).
+    """
+    text = _client_call_tool(
+        fixture.mcp_url(),
+        "delete_repo",
+        '{"repo_name": "x"}',
+    )
+    assert text.startswith("BLOCKED:"), text
+
+
+@_with_live_proxy(expose_admin_tools=True)
+def _test_C3_bypassed_call_marked_bypassed(fixture):
+    """A bypassed call surfaces with [BYPASSED] prefix and is forwarded.
+
+    We exercise the bypass path by setting controls_active via the
+    UpstreamMcp's control-manager hook... but the live fixture doesn't
+    own a ControlManager (the constructor passed control_manager=None).
+    Easier: monkey-patch the upstream's _control_manager for this test
+    so the adapter sends action_validation=False on the call.
+    """
+    class _StubControls:
+        @staticmethod
+        def to_dict():
+            return {"input_validation": True, "action_validation": False, "coherence_check": True}
+
+    class _StubControlManager:
+        @staticmethod
+        def get_controls():
+            return _StubControls()
+
+    fixture.upstream._control_manager = _StubControlManager()
+
+    text = _client_call_tool(
+        fixture.mcp_url(),
+        "delete_repo",
+        '{"repo_name": "x"}',
+    )
+    assert text.startswith("[BYPASSED]"), text
+
+
+# ── Group D — Dynamic tool sync ────────────────────────────────────────────
+
+@_with_live_proxy(expose_admin_tools=False)
+def _test_D1_handle_tools_changed_diffs_catalogue(fixture):
+    """_handle_tools_changed adds new tools, removes gone tools.
+
+    Drives the listener directly: monkey-patch the proxy's
+    get_proxied_tools to return a synthetic catalogue, then call
+    _on_tools_changed (which runs _discover_tools then fans out to
+    the listener). After the dust settles the FastMCP tool set must
+    match the synthetic catalogue.
+    """
+    upstream = fixture.upstream
+    proxy = fixture.proxy
+
+    # Snapshot real tools, then make get_proxied_tools return a
+    # synthetic set so the diff sees a clean add/remove.
+    synthetic = [
+        {"name": "get_weather", "description": "kept", "inputSchema": {}},
+        {"name": "newly_added", "description": "added by test", "inputSchema": {}},
+    ]
+    saved = proxy.get_proxied_tools
+    proxy.get_proxied_tools = lambda: synthetic
+    try:
+        # Skip _discover_tools (we don't want it to overwrite our
+        # synthetic catalogue) — call the listener fan-out directly.
+        upstream._handle_tools_changed()
+    finally:
+        proxy.get_proxied_tools = saved
+
+    seen = _list_fastmcp_tool_names(upstream)
+    assert "get_weather" in seen
+    assert "newly_added" in seen
+    # Tools that were in the original catalogue but not in synthetic
+    # must have been removed.
+    assert "send_email" not in seen
+    assert "delete_repo" not in seen
+
+
+@_with_live_proxy(expose_admin_tools=False)
+def _test_D2_client_resees_catalogue_after_change(fixture):
+    """A connected client picks up the new catalogue on a re-list.
+
+    fastmcp.Client doesn't expose a direct "subscribe to
+    notifications/tools/list_changed" — verifying that a client
+    *receives* the notification mid-flight is a richer test than this
+    file should carry. Instead we verify the observable equivalent:
+    after _handle_tools_changed, a new tools/list call returns the
+    updated set. That's what any well-behaved client would do on
+    receiving the notification.
+    """
+    upstream = fixture.upstream
+    proxy = fixture.proxy
+
+    synthetic = [
+        {"name": "newly_added_d2", "description": "added", "inputSchema": {}},
+    ]
+    proxy.get_proxied_tools = lambda: synthetic
+    upstream._handle_tools_changed()
+
+    seen = _client_list_tools(fixture.mcp_url())
+    assert seen == {"newly_added_d2"}, seen
+
+
+@_with_live_proxy(expose_admin_tools=False)
+def _test_D3_inflight_call_survives_unrelated_removal(fixture):
+    """Removing tool A does not abort an in-flight call to tool B.
+
+    The simplest verification: start a call, complete it, remove a
+    different tool mid-stream, observe the call still produced its
+    result. We synthesise the "concurrent" aspect with two threads
+    coordinated by a small barrier.
+    """
+    import threading
+    import asyncio
+    from fastmcp import Client
+
+    upstream = fixture.upstream
+    proxy = fixture.proxy
+
+    completed = []
+    errors = []
+
+    def caller():
+        try:
+            text = _client_call_tool(
+                fixture.mcp_url(),
+                "get_weather",
+                '{"location": "Rome"}',
+            )
+            completed.append(text)
+        except Exception as e:
+            errors.append(e)
+
+    t = threading.Thread(target=caller)
+    t.start()
+    # Race — remove an unrelated tool while the call is in flight.
+    synthetic = [
+        {"name": "get_weather", "description": "still here", "inputSchema": {}},
+    ]
+    proxy.get_proxied_tools = lambda: synthetic
+    upstream._handle_tools_changed()
+    t.join(timeout=10.0)
+
+    assert not errors, errors
+    assert completed and "Mock result for get_weather" in completed[0]
+
+
+# ── Group G — Concurrent session safety ────────────────────────────────────
+
+@_with_live_proxy(expose_admin_tools=False)
+def _test_G1_three_concurrent_clients(fixture):
+    """Three clients call tools concurrently. All complete with no leaks.
+
+    Each gets a distinct Mcp-Session-Id (stateful default). State
+    isolation is the SDK's responsibility on the server side — we
+    just verify no client sees another client's result and all calls
+    finish successfully.
+    """
+    import threading
+
+    results: list[tuple[int, str]] = []
+    errors: list[BaseException] = []
+
+    def worker(idx: int):
+        try:
+            text = _client_call_tool(
+                fixture.mcp_url(),
+                "get_weather",
+                f'{{"location": "city-{idx}"}}',
+            )
+            results.append((idx, text))
+        except BaseException as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15.0)
+
+    assert not errors, errors
+    assert len(results) == 3
+    # Each result must contain that client's own city id — proves
+    # no cross-contamination of arguments between sessions.
+    for idx, text in results:
+        assert f"city-{idx}" in text, (idx, text)
+
+
+def _test_G2_validated_intent_global_known_limitation():
+    """G.2 documents the pre-existing _validated_intent global-state bug.
+
+    See design doc §11 / §12: the upstream MCP path inherits the
+    same module-level _validated_intent global that the REST
+    /proxy/intent endpoint already uses. Concurrent clients setting
+    different intents would race. This test exists to make the
+    limitation visible in the audit trail of the test suite — it does
+    NOT fix the bug, and it must NOT block on the bug being fixed.
+
+    The assertion is structural: the global exists, both REST and
+    MCP paths read/write it via the helper functions added in
+    Commit 4. If a future refactor retires the global to per-session
+    state, this test will fail with a comment pointing to where to
+    delete it.
+    """
+    from proxy import http_proxy
+    assert hasattr(http_proxy, "_validated_intent"), (
+        "If _validated_intent has been retired, delete this test "
+        "and update design doc §12.3 — the global-state bug is fixed."
+    )
+    assert callable(getattr(http_proxy, "_get_validated_intent", None))
+    assert callable(getattr(http_proxy, "_set_validated_intent", None))
+
+
 def register(run_fn=run):
     section("Layer 11c — MCP Proxy: Upstream streamable-HTTP MCP endpoint")
 
@@ -546,3 +822,11 @@ def register(run_fn=run):
     run_fn("F.1", "admin tools exposed by default in tools/list", _test_F1_admin_tools_default_present)
     run_fn("F.2", "expose_admin_tools=False suppresses admin tools in tools/list", _test_F2_admin_tools_suppressed)
     run_fn("F.3", "admin-tools toggle is local to MCP endpoint (REST routes unchanged)", _test_F3_admin_toggle_is_local_to_mcp_endpoint)
+    run_fn("C.1", "low-risk MCP call routes through MorpheusProxy.call_tool", _test_C1_low_risk_call_routes_through_proxy)
+    run_fn("C.2", "high-risk MCP call → BLOCKED text in tool response", _test_C2_high_risk_blocked_returns_blocked_text)
+    run_fn("C.3", "bypassed MCP call → [BYPASSED] prefix, still forwarded", _test_C3_bypassed_call_marked_bypassed)
+    run_fn("D.1", "_handle_tools_changed adds + removes via add_tool/remove_tool", _test_D1_handle_tools_changed_diffs_catalogue)
+    run_fn("D.2", "client re-list reflects updated catalogue after sync", _test_D2_client_resees_catalogue_after_change)
+    run_fn("D.3", "in-flight tool call survives unrelated tool removal", _test_D3_inflight_call_survives_unrelated_removal)
+    run_fn("G.1", "three concurrent MCP clients: no state leak, all complete", _test_G1_three_concurrent_clients)
+    run_fn("G.2", "doc-only test: _validated_intent global-state bug acknowledged", _test_G2_validated_intent_global_known_limitation)

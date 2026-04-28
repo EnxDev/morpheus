@@ -337,14 +337,31 @@ class UpstreamMcp:
     def _handle_tools_changed(self) -> None:
         """Re-sync the FastMCP tool catalogue against the proxy.
 
-        Computes the diff between ``self._registered_proxied_tools`` and
-        the proxy's current ``get_proxied_tools()``, then calls
-        ``mcp.add_tool`` and ``mcp.remove_tool`` accordingly. Real body
-        lands in Commit 6.
+        Computes the diff between currently-registered proxied tool
+        names and the proxy's latest catalogue, then calls
+        ``mcp.add_tool`` for new tools and ``mcp.remove_tool`` for
+        removed ones. Admin tools are not in the diff — they are
+        static for the proxy's lifetime.
+
+        FastMCP fans out a ``tools/list_changed`` notification to
+        connected MCP clients automatically on add/remove, so client
+        propagation is free.
+
+        Fires on the discovery polling thread; the call sites in
+        ``MorpheusProxy._on_tools_changed`` already wrap each listener
+        in try/except, so any exception raised here is caught and
+        audited rather than crashing the proxy.
         """
-        raise NotImplementedError(
-            "_handle_tools_changed is implemented in Commit 6"
-        )
+        latest = {t["name"]: t for t in self._proxy.get_proxied_tools()}
+        latest_names = set(latest)
+        current_names = set(self._registered_proxied_tools)
+
+        for removed in current_names - latest_names:
+            self._mcp.remove_tool(removed)
+            self._registered_proxied_tools.discard(removed)
+
+        for added in latest_names - current_names:
+            self._register_one_proxied_tool(latest[added])
 
     # ── ASGI integration ──────────────────────────────────────────────
 
