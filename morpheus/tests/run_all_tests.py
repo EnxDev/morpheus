@@ -42,6 +42,7 @@ from tests.test_layer09_controls import register as reg09
 from tests.test_layer10_policy_checker import register as reg10
 from tests.test_layer11_proxy_server import register as reg11
 from tests.test_layer11b_streamable_http import register as reg11b
+from tests.test_layer11c_upstream_streamable import register as reg11c
 from tests.test_layer12_mcp_server import register as reg12
 from tests.test_layer13_fastapi import register as reg13
 from tests.test_layer14_e2e import register as reg14
@@ -62,6 +63,7 @@ reg09(run)
 reg10(run)
 reg11(run)
 reg11b(run)
+reg11c(run)
 reg12(run)
 reg13(run)
 reg14(run)
