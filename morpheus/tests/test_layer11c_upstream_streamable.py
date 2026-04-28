@@ -55,7 +55,68 @@ def _test_C0_upstream_constructs(url):
     assert upstream.expose_admin_tools is True
 
 
+def _list_fastmcp_tool_names(upstream) -> set[str]:
+    """Synchronously enumerate the FastMCP tool catalogue.
+
+    FastMCP exposes ``list_tools`` as an async method. This helper
+    runs it on a short-lived event loop so sync test bodies can use it.
+    """
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        tools = loop.run_until_complete(upstream.fastmcp.list_tools())
+    finally:
+        loop.close()
+    return {t.name for t in tools}
+
+
+# ── Group A — Tool registration (in-process, no HTTP yet) ──────────────────
+# A.1/A.2 over real HTTP arrive in Commit 4 once the lifespan + mount
+# integration is in place. Here we verify the in-process FastMCP
+# catalogue matches what the proxy reports.
+
+@_with_mock_server
+def _test_C_register_proxied_tools(url):
+    """Every tool from MorpheusProxy.get_proxied_tools is registered."""
+    from proxy.proxy_server import MorpheusProxy
+    from proxy.upstream import UpstreamMcp
+
+    proxy = MorpheusProxy(url)
+    upstream = UpstreamMcp(proxy, expose_admin_tools=False)
+    expected = {t["name"] for t in proxy.get_proxied_tools()}
+    assert expected == {"send_email", "get_weather", "read_file", "delete_repo"}
+    assert _list_fastmcp_tool_names(upstream) == expected
+
+
+@_with_mock_server
+def _test_C_register_admin_tools(url):
+    """expose_admin_tools=True adds the three management tools."""
+    from proxy.proxy_server import MorpheusProxy
+    from proxy.upstream import UpstreamMcp
+
+    proxy = MorpheusProxy(url)
+    upstream = UpstreamMcp(proxy, expose_admin_tools=True)
+    names = _list_fastmcp_tool_names(upstream)
+    assert {"set_validated_intent", "get_proxy_status", "get_proxy_audit"} <= names
+
+
+@_with_mock_server
+def _test_C_no_admin_tools(url):
+    """expose_admin_tools=False suppresses the three management tools."""
+    from proxy.proxy_server import MorpheusProxy
+    from proxy.upstream import UpstreamMcp
+
+    proxy = MorpheusProxy(url)
+    upstream = UpstreamMcp(proxy, expose_admin_tools=False)
+    names = _list_fastmcp_tool_names(upstream)
+    for admin in ("set_validated_intent", "get_proxy_status", "get_proxy_audit"):
+        assert admin not in names
+
+
 def register(run_fn=run):
     section("Layer 11c — MCP Proxy: Upstream streamable-HTTP MCP endpoint")
 
     run_fn("C0", "UpstreamMcp constructs against a real MorpheusProxy", _test_C0_upstream_constructs)
+    run_fn("C.tools", "every proxied tool is registered with FastMCP", _test_C_register_proxied_tools)
+    run_fn("C.admin_on", "expose_admin_tools=True adds three management tools", _test_C_register_admin_tools)
+    run_fn("C.admin_off", "expose_admin_tools=False suppresses management tools", _test_C_no_admin_tools)
