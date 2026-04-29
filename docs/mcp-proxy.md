@@ -49,7 +49,7 @@ env var.
 | Transport | Identifier | Use when |
 |---|---|---|
 | Morpheus JSON-RPC over HTTP | `plain_jsonrpc` (default) | The downstream is a simple server that accepts a bare JSON-RPC POST (the HR demo, `tests/mock_mcp_server.py`, other Morpheus-style servers). |
-| MCP streamable-HTTP | `streamable_http` | The downstream implements the MCP spec's streamable-HTTP transport (FastMCP in streamable mode, Superset MCP, the official MCP reference servers). Includes `initialize` + `Mcp-Session-Id` + `Accept: text/event-stream`. |
+| MCP streamable-HTTP | `streamable_http` | The downstream implements the MCP spec's streamable-HTTP transport (e.g., FastMCP-based servers in streamable mode, the official MCP reference servers, BI-style MCP services). Includes `initialize` + `Mcp-Session-Id` + `Accept: text/event-stream`. |
 
 On the `streamable_http` path the transport holds a single session open
 for the proxy's lifetime, reuses it across calls, re-initializes once
@@ -91,6 +91,61 @@ transport.close()  # best-effort session terminate
 See [streamable-http-transport.md](streamable-http-transport.md) for the
 design rationale, the session lifecycle model, and the SDK-compatibility
 notes.
+
+## Upstream MCP server endpoint
+
+The proxy also exposes a native MCP streamable-HTTP server endpoint at
+`/mcp/` on the same FastAPI app and port that serves the REST surface.
+MCP-compliant HTTP clients connect directly; tool calls flow through
+the same Control 2 pipeline as the REST `/proxy/call` path. The proxy
+looks like a normal MCP server to clients while remaining transparent
+to the downstream.
+
+```bash
+# Default — endpoint mounted at /mcp/, stateful sessions, admin tools exposed
+python proxy/http_proxy.py --real-server http://localhost:5010
+
+# Customise the mount path and disable admin tools
+python proxy/http_proxy.py \
+  --real-server http://localhost:5010 \
+  --mcp-path /agents/mcp/ \
+  --no-admin-mcp-tools
+
+# Stateless mode (each POST is an independent transport)
+MORPHEUS_MCP_STATELESS=true python proxy/http_proxy.py --real-server http://localhost:5010
+```
+
+| Flag | Env var | Default | Effect |
+|---|---|---|---|
+| `--mcp-path` | `MORPHEUS_MCP_PATH` | `/mcp/` | Path the upstream MCP endpoint is mounted at |
+| `--mcp-stateless` | `MORPHEUS_MCP_STATELESS` | off | Each POST is an independent transport (no session pinning) |
+| `--no-admin-mcp-tools` | `MORPHEUS_NO_ADMIN_MCP_TOOLS` | off | Suppress `set_validated_intent`, `get_proxy_status`, `get_proxy_audit` |
+
+Auth on the upstream endpoint reuses the same `MORPHEUS_PROXY_KEY` check
+the REST endpoints use. An ASGI middleware wrapping the mounted MCP
+sub-app accepts `X-Proxy-Key: <key>` or `Authorization: Bearer <key>`;
+when the env var is empty, every request passes (dev mode, parity with
+REST). REST and MCP cannot disagree about whether the proxy is
+authenticated.
+
+A typical MCP client config points `serverUrl` at
+`http://localhost:5020/mcp/` and supplies the proxy key via header.
+
+```python
+# Programmatic — for in-process integrations
+from proxy import MorpheusProxy
+from proxy.upstream import UpstreamMcp
+
+proxy = MorpheusProxy("http://localhost:5010")
+upstream = UpstreamMcp(proxy, mount_path="/mcp/")
+# upstream.asgi_app is mountable on any FastAPI app
+# upstream.lifespan_context(app) must be threaded through the parent's lifespan=
+```
+
+See [streamable-http-upstream.md](streamable-http-upstream.md) for the
+design rationale, the lifespan-wiring footgun, the session model, and
+the implementation addendum (path-doubling discovery, FastMCP runtime
+tool sync, etc.).
 
 ## Dynamic Discovery
 
