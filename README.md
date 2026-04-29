@@ -1,7 +1,7 @@
 # Morpheus
 
 > **Status:** prototype under active development.
-> Control 1 and Control 2 are functional and tested (181 tests, 15 layers).
+> Control 1 and Control 2 are functional and tested (219 tests, 15 layers).
 > SaaS features (dashboard, multi-tenancy, persistent audit) are not built yet.
 
 > LLMs propose. Morpheus decides.
@@ -118,7 +118,7 @@ The proxy supports two downstream wire formats, selected via the
 | Transport | When to use | Default |
 |---|---|---|
 | `plain_jsonrpc` | Simple servers that accept a bare JSON-RPC POST (the HR demo, `tests/mock_mcp_server.py`, other Morpheus-style servers). | ✅ |
-| `streamable_http` | MCP-spec-compliant servers that require `initialize` + `Mcp-Session-Id` + `Accept: text/event-stream` (FastMCP in streamable mode, Superset MCP, the official MCP reference servers). | |
+| `streamable_http` | MCP-spec-compliant servers that require `initialize` + `Mcp-Session-Id` + `Accept: text/event-stream` (e.g., FastMCP-based servers in streamable mode, the official MCP reference servers, BI-style MCP services). | |
 
 ```bash
 # Plain JSON-RPC (default — no flag needed)
@@ -139,6 +139,61 @@ are held open across calls on the `streamable_http` path and re-initialized
 once, transparently, on session loss. See
 [docs/streamable-http-transport.md](docs/streamable-http-transport.md)
 for the design rationale.
+
+### Connecting an MCP client
+
+The proxy also exposes a native MCP streamable-HTTP server endpoint at
+`/mcp/` on the same FastAPI app and port. Any MCP-compliant client that
+speaks streamable-HTTP can connect directly: tool calls flow through the
+full Control 2 pipeline (Level 1 + Level 2 + IBAC + audit) before being
+forwarded to the downstream MCP server. The proxy looks like a normal
+MCP server to clients, while remaining transparent to the downstream.
+
+```bash
+# Default — endpoint mounted at /mcp/, stateful sessions, admin tools exposed
+python proxy/http_proxy.py --real-server http://localhost:5010
+
+# Customise the mount path and disable admin tools
+python proxy/http_proxy.py \
+  --real-server http://localhost:5010 \
+  --mcp-path /agents/mcp/ \
+  --no-admin-mcp-tools
+
+# Stateless mode (each POST is an independent transport, no session pinning)
+MORPHEUS_MCP_STATELESS=true python proxy/http_proxy.py --real-server http://localhost:5010
+```
+
+A typical MCP client config points the server URL at
+`http://localhost:5020/mcp/` and uses the same authentication header as
+the REST endpoints (`X-Proxy-Key` or `Authorization: Bearer …`, when
+`MORPHEUS_PROXY_KEY` is set). Three management tools — `set_validated_intent`,
+`get_proxy_status`, `get_proxy_audit` — are exposed alongside the proxied
+catalogue by default; pass `--no-admin-mcp-tools` to suppress them.
+
+See [docs/streamable-http-upstream.md](docs/streamable-http-upstream.md)
+for the design rationale, session lifecycle, and lifespan-wiring details.
+
+---
+
+## Tested with
+
+Morpheus has been verified against the following MCP implementations
+during development. This list is factual compatibility evidence, not a
+promotion of any specific deployment.
+
+- **MCP-compliant client over stdio** — the standalone bridge in
+  [morpheus/proxy/mcp_bridge.py](morpheus/proxy/mcp_bridge.py) speaks the
+  MCP stdio transport; verified with desktop and IDE-embedded MCP clients.
+- **MCP-compliant client over streamable-HTTP** — the new `/mcp/` upstream
+  endpoint speaks the MCP spec's streamable-HTTP transport; verified with
+  generic MCP HTTP clients (e.g., LangChain's `MultiServerMCPClient`).
+- **FastMCP-based downstream servers** — both stateful and stateless
+  modes; the streamable-HTTP downstream transport was developed against
+  FastMCP-shaped servers.
+- **The official MCP reference servers** — used as a conformance baseline
+  during development of the streamable-HTTP transports.
+- **A real-world BI MCP service** — used as the original integration
+  target that motivated the streamable-HTTP downstream feature.
 
 ---
 
@@ -317,6 +372,10 @@ User Input
   → validated prompt
   → LLM
   → LLM calls tool via MCP (tools/call)
+       │  Two ingress paths into the proxy:
+       │    • REST  — POST /proxy/call  (proprietary)
+       │    • MCP   — /mcp/             (streamable-HTTP, spec-compliant)
+       ▼
   → [CONTROL 2: Action Validation]
       MorpheusProxy
         → Level 1: hybrid risk classification (name + description)
@@ -329,7 +388,7 @@ User Input
       Intent → generates authorization tuples (principal:action#resource)
       Each execution step verified against tuples
       Sensitive resources require exact match (wildcards blocked)
-  → Execution (or blocked)
+  → Execution (or blocked)  → downstream MCP server (plain_jsonrpc | streamable_http)
   → Audit Trail
 ```
 
@@ -363,8 +422,9 @@ morpheus/
 │   ├── discovery.py           # tools/list + tool mirroring
 │   ├── transport.py           # Downstream transports: plain_jsonrpc + streamable_http
 │   ├── policy_checker.py      # Level 1 (deterministic) + Level 2 (LLM-assisted)
-│   ├── mcp_bridge.py          # MCP proxy bridge (stdio, for Claude Desktop)
-│   └── http_proxy.py          # HTTP proxy service (for any integration)
+│   ├── mcp_bridge.py          # MCP proxy bridge (stdio transport for desktop/IDE clients)
+│   ├── upstream.py            # Upstream MCP streamable-HTTP server endpoint (/mcp/)
+│   └── http_proxy.py          # HTTP proxy service (REST + /mcp/ on one FastAPI app)
 ├── execution/
 │   ├── plan.py
 │   ├── engine.py              # Sequential executor with retry
@@ -373,22 +433,22 @@ morpheus/
 │   └── logger.py              # Structured JSON audit trail with pluggable sinks
 ├── llm/
 │   ├── provider.py            # Abstract provider + factory
-│   ├── openai.py              # OpenAI (default)
-│   ├── ollama.py              # Ollama (local)
-│   └── anthropic.py           # Anthropic Claude
+│   ├── openai.py              # OpenAI provider (env: OPENAI_API_KEY)
+│   ├── ollama.py              # Ollama provider (local, no key required)
+│   └── anthropic.py           # Anthropic provider (env: ANTHROPIC_API_KEY)
 ├── domain/
 │   ├── config.py              # Domain-agnostic configuration
 │   ├── registry.py            # Domain registry
 │   └── default_bi.py               # Default BI domain config
 ├── controls.py                # Control 1 / Control 2 / coherence toggles
-├── mcp_server.py              # MCP tools for Claude Desktop / VS Code
+├── mcp_server.py              # MCP tools (stdio transport for desktop/IDE clients)
 ├── sdk/
 │   ├── client.py              # Python HTTP client
 │   ├── types.py               # Pydantic models
 │   └── adapters/
 │       └── fastapi_middleware.py  # ASGI middleware
 └── tests/
-    ├── run_all_tests.py       # Full test suite (181 tests, 15 layers)
+    ├── run_all_tests.py       # Full test suite (219 tests, 15 layers)
     ├── test_cases.py          # E2E mock tests
     └── mock_mcp_server.py     # Mock MCP server for proxy testing
 
@@ -424,7 +484,7 @@ morpheus-hr-chatbot-demo/             # HR Assistant demo
 ```bash
 git clone https://github.com/EnxDev/morpheus.git
 cd morpheus && pip install -r requirements.txt
-cp .env.example .env  # add your OPENAI_API_KEY or ANTHROPIC_API_KEY
+cp .env.example .env  # set OPENAI_API_KEY, ANTHROPIC_API_KEY, or use Ollama (no key)
 uvicorn main:app --port 8000 &
 curl -X POST http://localhost:8000/api/parse \
   -H "Content-Type: application/json" \
@@ -436,7 +496,7 @@ curl -X POST http://localhost:8000/api/parse \
 ## Prerequisites
 
 - Python 3.11+
-- An OpenAI API key (default) **or** [Ollama](https://ollama.com/download) for local validation
+- An API key for a supported remote provider (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) **or** [Ollama](https://ollama.com/download) for local validation
 - Node.js 20+ (for the testing UI, optional)
 
 ---
@@ -451,7 +511,7 @@ pip install fastmcp   # for MCP server support
 
 # 2. Configure environment
 cp .env.example .env
-# Edit .env — add your OPENAI_API_KEY or ANTHROPIC_API_KEY (auto-detected)
+# Edit .env — set OPENAI_API_KEY, ANTHROPIC_API_KEY, or use Ollama locally (no key)
 
 # 3. Pull the model (only if using Ollama)
 # ollama pull mistral
@@ -511,13 +571,13 @@ Returns `{"status": "ok"}`.
 ## MCP Server
 
 Morpheus can run as an MCP server, exposing its pipeline as tools  
-for any compatible client (Claude Desktop, VS Code, Cursor).
+for any MCP-compliant client that speaks the stdio transport.
 
 ```bash
 cd morpheus && python mcp_server.py
 ```
 
-Or add to Claude Desktop config:
+A typical MCP client configuration entry:
 
 ```json
 {
@@ -530,17 +590,28 @@ Or add to Claude Desktop config:
 }
 ```
 
+For HTTP-based MCP clients, see the streamable-HTTP server endpoint
+described in [Connecting an MCP client](#connecting-an-mcp-client) above.
+
 ---
 
-## LLM Usage
+## Provider configuration
 
-LLM calls go through a provider abstraction. Auto-detected from available API keys, or override with `MORPHEUS_LLM_PROVIDER`:
+LLM calls go through a provider abstraction. The provider is auto-detected
+from the API key present in the environment, or selected explicitly with
+`MORPHEUS_LLM_PROVIDER`. The table below enumerates the providers
+Morpheus supports out of the box; specific model strings are intentionally
+not pinned in this document — each provider's `<provider>_MODEL` env var
+defaults to the current stable model from that provider, which may evolve
+over time.
 
-| Provider    | Auto-detected when          | Default model              | Notes                |
-| ----------- | --------------------------- | -------------------------- | -------------------- |
-| `openai`    | `OPENAI_API_KEY` is set     | `gpt-4o`                   | Remote               |
-| `anthropic` | `ANTHROPIC_API_KEY` is set  | `claude-sonnet-4-20250514` | Remote               |
-| `ollama`    | No API key found (fallback) | `mistral`                  | Local, no key needed |
+| Provider    | Auto-detected when          | Model selection env var | Notes                          |
+| ----------- | --------------------------- | ----------------------- | ------------------------------ |
+| `openai`    | `OPENAI_API_KEY` is set     | `OPENAI_MODEL`          | Remote, frontier-tier accuracy |
+| `anthropic` | `ANTHROPIC_API_KEY` is set  | `ANTHROPIC_MODEL`       | Remote, frontier-tier accuracy |
+| `ollama`    | No API key found (fallback) | `OLLAMA_MODEL`          | Local, no key required         |
+
+The four pipeline components that call an LLM and what they call it for:
 
 | Component                 | Type       | Purpose                                               |
 | ------------------------- | ---------- | ----------------------------------------------------- |
@@ -555,13 +626,17 @@ IBAC authorization tuples, plan review, risk classification, execution, audit.
 
 ### Local models (Ollama) — known limitations
 
-When running with local models like `mistral` via Ollama, parsing accuracy is significantly lower compared to cloud models (GPT-4o, Claude). Known issues include:
+When running with smaller local models via Ollama, parsing accuracy is
+significantly lower compared to frontier remote models. Known issues
+include:
 
 - **Subject resolution** — the parser may fail to extract indirect references (e.g. "Access the payroll records **for the CEO**" → parsed as Subject: `self` instead of Subject: `CEO`)
 - **Ambiguous intent** — local models are more likely to assign similar confidence scores to competing hypotheses, triggering unnecessary clarification loops
 - **Structured output** — smaller models occasionally produce malformed JSON or miss fields entirely, causing parse retries
 
-For demo and development purposes, local models work well enough. For production use or accurate parsing of complex queries, a cloud provider (OpenAI or Anthropic) is strongly recommended.
+For demo and development purposes, local models work well enough. For
+production use or accurate parsing of complex queries, a remote provider
+is strongly recommended.
 
 ---
 
@@ -635,6 +710,10 @@ The logged-in user is **Enzo** (Developer, employee E003). He can only see his o
 - [Configuration](docs/configuration.md)
 - [API Reference](docs/api-reference.md)
 - [MCP Proxy](docs/mcp-proxy.md)
+- [Streamable-HTTP downstream transport (design)](docs/streamable-http-transport.md)
+- [Streamable-HTTP upstream MCP endpoint (design)](docs/streamable-http-upstream.md)
+- [Multilingual support — analysis](docs/multilingual-analysis.md)
+- [Roadmap](docs/roadmap.md)
 - [Python SDK](docs/sdk.md)
 - [Contributing](docs/contributing.md)
 
