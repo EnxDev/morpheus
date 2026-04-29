@@ -1,8 +1,10 @@
 # Morpheus — Roadmap
 
-Post-demo backlog of work on the Morpheus repo itself. This is not a product
-roadmap in the marketing sense — it is a technical backlog of concrete
-pieces of work identified during the Superset demo integration exercise.
+Technical backlog of work on the Morpheus repo itself. This is not a
+product roadmap in the marketing sense — it is a list of concrete
+pieces of work identified during real integration exercises (notably the
+BI-deployment integration that motivated the streamable-HTTP transports
+and several of the items below).
 
 Each item has three fields: **Why** (what problem it solves), **Scope**
 (what exactly needs to change), and **Size** (rough effort estimate to
@@ -14,56 +16,43 @@ Ordering in each section reflects current priority. It is not fixed.
 
 ## 1. Features
 
-### 1.1. MCP streamable-HTTP **server** endpoint on the HTTP proxy
+### 1.1. MCP streamable-HTTP **server** endpoint on the HTTP proxy ✅ shipped
 
-**Why.** Today Morpheus's HTTP proxy exposes only five custom REST endpoints
+**Status.** Shipped on `main` in merge commit `9d2cb79` (`Merge branch
+'feat/streamable-http-upstream' into main`). The full design,
+implementation addendum, and Layer 11c test coverage live in
+[streamable-http-upstream.md](streamable-http-upstream.md). Final
+artifact: a new `proxy/upstream.py` module owning FastMCP construction,
+auth middleware, and lifespan plumbing; three new CLI flags
+(`--mcp-path`, `--mcp-stateless`, `--no-admin-mcp-tools`); a public
+`MorpheusProxy.add_tools_changed_listener` API; 25 new tests.
+
+**Original entry, preserved for context:**
+
+The HTTP proxy historically exposed only five custom REST endpoints
 (`/proxy/call`, `/proxy/tools`, `/proxy/status`, `/proxy/intent`,
-`/proxy/audit`). These are proprietary — native MCP clients (LangChain's
-`MultiServerMCPClient`, Claude Desktop over HTTP, n8n MCP integrations,
-anything speaking the MCP spec) cannot connect to Morpheus as a transparent
-sidecar. This forces integrators to either call Morpheus's REST API
-manually from their tool-calling loop (Option C in the Superset demo) or
-bypass Morpheus entirely for tool dispatch.
+`/proxy/audit`) — proprietary surfaces that no MCP-compliant HTTP
+client could speak directly. Integrators had to either call the REST
+API manually from their tool-calling loop or bypass Morpheus entirely
+for tool dispatch.
 
-With an upstream MCP server endpoint, the proxy becomes architecturally
+With the upstream MCP server endpoint, the proxy is now architecturally
 symmetric to its downstream (which already speaks streamable-HTTP as of
 `feat/streamable-http-downstream`): clients connect via standard MCP,
-calls flow through Control 2 (Level 1 pattern rules + Level 2 coherence),
-and are forwarded to the real downstream. The proxy becomes a true
-policy-enforcing MCP sidecar.
+calls flow through Control 2 (Level 1 pattern rules + Level 2
+coherence), and are forwarded to the real downstream. The proxy is a
+policy-enforcing MCP sidecar in both directions.
 
-**Scope.**
+The Phase 1 design considered two strategies — S1 (mount FastMCP as an
+ASGI sub-app on the existing FastAPI app) vs S2 (standalone FastMCP in
+a background thread). S1 was selected; S2's only theoretical advantage
+(concurrency) did not materialise as a real differentiator, and S1's
+single-process model is operationally simpler. The "FastMCP supports
+runtime tool injection" question was confirmed during Phase 0 reconnaissance
+and validated by the Group D dynamic-sync tests.
 
-- New endpoint surface at `/mcp` on the existing FastAPI app, speaking
-  full MCP streamable-HTTP: `initialize` handshake, `Mcp-Session-Id`
-  management, SSE-or-JSON response bodies, session lifecycle
-- Two implementation strategies to evaluate during Phase 1 of this work:
-  - S1: Mount FastMCP as a sub-application of the FastAPI app
-    (`app.mount("/mcp", mcp_asgi_app)`) — simplest, one process
-  - S2: Standalone FastMCP server in a background thread, sharing
-    state with the REST app — more complex but possibly more flexible
-    for concurrency
-- Dynamic tool exposure: the proxy discovers tools from downstream at
-  runtime, so FastMCP tool registration cannot be static — need to
-  verify the SDK supports runtime tool injection or forwarding
-- Every MCP tool call received on `/mcp` routes through the existing
-  `MorpheusProxy.call_tool()` → Control 2 pipeline → downstream forward
-- Existing REST endpoints at `/proxy/*` continue to work unchanged
-- Transport selection: when the upstream endpoint is active, it should
-  coexist with the downstream transport config (upstream = MCP server,
-  downstream = `streamable_http` or `plain_jsonrpc`)
-
-**Size.** 1-2 weeks following the same five-phase methodology used for
-streamable-HTTP downstream (reconnaissance → design → implementation →
-tests → docs). Probable final artifact: a new `StreamableHttpServer`
-class in `morpheus/proxy/` analogous to `StreamableHttpTransport`, plus
-300-500 lines of test coverage.
-
-**Blocked by.** Nothing. Can start anytime.
-
-**Unblocks.** Superset demo Option A (proxy as transparent MCP sidecar),
-any future integration with n8n, LangGraph, Langchain, or any HTTP-native
-MCP client.
+**Unblocked downstream items.** Item 1.4 below (unifying stdio +
+streamable-HTTP under one proxy) is now implementable.
 
 ---
 
@@ -134,8 +123,9 @@ asked for this.
 **Why.** Today there are two separate products: the HTTP proxy
 (`proxy_server.py` + `http_proxy.py`) and the stdio bridge
 (`mcp_bridge.py`). They share the `MorpheusProxy` core but present two
-surfaces. A user wanting Morpheus to sit between Claude Desktop (stdio)
-and a Superset MCP server (HTTP) currently has no single-command setup.
+surfaces. A user wanting Morpheus to sit between a stdio-only MCP
+client (typical desktop or IDE integration) and an HTTP MCP backend
+currently has no single-command setup.
 
 **Scope.**
 
@@ -165,7 +155,7 @@ justifies it.
 **Why.** The proxy has a module-level global used as a fallback when a
 `/proxy/call` request doesn't include an intent inline. Under concurrent
 users, user A's intent can leak into user B's decision. Discovered during
-Superset demo design.
+the BI-deployment integration design.
 
 **Scope.**
 
@@ -180,9 +170,9 @@ Superset demo design.
 
 **Blocked by.** Nothing. Can be done independently at any time.
 
-**Mitigation currently in place.** Single-user deployments (like the
-Superset demo) are unaffected as long as the client always passes the
-intent inline. Documented as an invariant in the demo's `CLAUDE.md`.
+**Mitigation currently in place.** Single-user deployments are
+unaffected as long as the client always passes the intent inline.
+Documented as an invariant in the integration's deployment notes.
 
 **Priority.** High. This is a correctness bug in any multi-user
 deployment.
@@ -241,42 +231,33 @@ which isn't a typical Morpheus deployment.
 
 ---
 
-### 2.4. Documentation import-path bug across `docs/*.md`
+### 2.4. Documentation import-path bug across `docs/*.md` ✅ resolved
 
-**Why.** During Phase 5 of `feat/streamable-http-downstream`, Claude
-Code discovered that `docs/configuration.md`, `docs/getting-started.md`,
-and `docs/sdk.md` all contain `from morpheus.…` import paths that do
-not match the actual package layout. The project runs from inside
-`morpheus/` as cwd (`cd morpheus && python …`), so the top-level
-importable package is `proxy`, not `morpheus.proxy`.
+**Status.** Resolved on `docs/post-merge-refresh` via Option B — a
+top-level `morpheus/__init__.py` package shim that exposes the
+documented `morpheus.X` import paths without requiring any change to
+the existing operational layout (tests still run from `cd morpheus &&
+python …` against bare top-level packages). The shim is intentionally
+non-importing (no eager re-exports) to avoid circular-dependency
+surprises during submodule bootstrap.
 
-**Scope.**
+**Original entry, preserved for context:**
 
-- Two possible fixes:
-  - (A) Update all affected doc imports to use `from proxy.…`,
-    `from policies.…`, `from sdk.…`
-  - (B) Add a top-level `morpheus/__init__.py` shim so that
-    `from morpheus.x import y` actually works, and leave the docs as-is
-- Option B is more user-friendly: the README says "pip install morpheus"
-  so `import morpheus` is what users expect. But it requires
-  reconsidering the package structure.
+During Phase 5 of `feat/streamable-http-downstream`, the audit
+discovered that `docs/configuration.md`, `docs/getting-started.md`,
+and `docs/sdk.md` all contain `from morpheus.…` import paths that did
+not match the actual package layout — the project ran from inside
+`morpheus/` as cwd, so the top-level importable package was `proxy`,
+not `morpheus.proxy`.
 
-**Affected files.**
-
-- `docs/configuration.md` — lines 10, 11, 139, 169 (4 occurrences)
-- `docs/getting-started.md` — line 72 (1 occurrence)
-- `docs/sdk.md` — lines 10, 64, 73, 82, 91 (5 occurrences)
-
-**Size.**
-
-- Option A: 1 hour (find/replace, verify imports run)
-- Option B: 1 day (structural change, all tests, backward compat
-  verification)
-
-**Blocked by.** Decision between A and B.
-
-**Priority.** Medium. Documentation that doesn't match the code is
-worse than missing documentation.
+Two fixes were considered: (A) rewrite all docs to use
+`from proxy.…` / `from policies.…` / `from sdk.…`, or (B) add a
+top-level `morpheus/__init__.py` shim. Option B was chosen because
+the user-facing import shape (`from morpheus.X import Y`) is what
+operators expect from a Python package, and forcing the docs into the
+`from proxy.…` shape would have made them unidiomatic. The shim
+preserves both: documented form works, operational form continues to
+work.
 
 ---
 
@@ -405,13 +386,14 @@ validator, clarifier, decision engine, IBAC) could plausibly be used as a
 Python library embedded inside another application. Deciding this
 explicitly shapes future API design.
 
-### 4.2. What's the relationship between Morpheus's audit trail and Superset's, OpenTelemetry, or other observability systems?
+### 4.2. What's the relationship between Morpheus's audit trail and external observability systems?
 
-Morpheus's audit log is currently in-memory and proprietary. Teams using
-Superset, Prometheus, or OpenTelemetry will want Morpheus events in their
-existing pipelines. A "structured audit sink" abstraction (pluggable:
-in-memory, file, OTEL, custom) is a natural next step but currently
-unsketched.
+Morpheus's audit log is currently in-memory and proprietary. Teams
+running existing observability stacks (OpenTelemetry, Prometheus,
+SIEM/log-aggregation pipelines, BI-platform-native audit tables) will
+want Morpheus events in those pipelines. A "structured audit sink"
+abstraction (pluggable: in-memory, file, OTEL, custom) is a natural
+next step but currently unsketched.
 
 ### 4.3. Should Morpheus's Control 1 coherence check be extractable as a standalone library?
 
@@ -425,9 +407,11 @@ shows up.
 
 ## 5. Notes on methodology
 
-The streamable-HTTP downstream work (feat/streamable-http-downstream,
-shipped Apr 2026, 20 commits, 187 tests) established a five-phase
-methodology that has worked well:
+The streamable-HTTP downstream work (`feat/streamable-http-downstream`,
+shipped Apr 2026) established a five-phase methodology that has since
+been applied to the streamable-HTTP upstream feature, the IBAC
+fail-open fix, and this documentation refresh. As of the latest merge
+the test suite stands at 219 tests across 15 layers. The phases:
 
 1. **Phase 0 — Reconnaissance**: read the code, produce a report, no
    changes
@@ -456,5 +440,7 @@ Items below ~3 days can be done more informally (one phase, one commit).
 - If an item is explicitly deferred forever, move to a "Rejected"
   section with the reason
 
-This is a living document. The current form is post-Superset-demo;
-expect it to look different six months from now.
+This is a living document. The current form reflects the state of the
+repo after the streamable-HTTP downstream + upstream features and the
+IBAC fail-open fix shipped to `main`; expect it to look different six
+months from now.
