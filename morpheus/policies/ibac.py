@@ -24,6 +24,20 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 
+# ── Sentinel for unknown action ──────────────────────────────────────────────
+#
+# Returned by ``DeterministicEvaluator._infer_action_resource`` when a step
+# name does not match any English-prefix pattern. NOT a real IBAC action —
+# it is intentionally outside the ``{read, write, execute, delete, *}``
+# vocabulary so an operator-declared tuple with a concrete action never
+# matches it. Only an explicit ``*`` action wildcard tuple (operator opt-in
+# to "allow anything") authorises a step with this action.
+#
+# See the "IBAC fail-open fix for non-English step names" entry in
+# CHANGELOG.md for rationale and migration guidance.
+_UNKNOWN_ACTION = "unknown"
+
+
 # ── Data structures ──────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -247,6 +261,18 @@ class DeterministicEvaluator:
         tuples: list[AuthorizationTuple],
         step: dict,
     ) -> EvaluationResult:
+        """Evaluate ``step`` against ``tuples``.
+
+        Pure steps (``type == "pure"``) are always allowed. Side-effect
+        and reversible steps must match at least one tuple in the set.
+
+        For steps without an explicit ``requires:`` field, candidates are
+        constructed from inference. The execute-fallback candidate is only
+        appended when the inferred action is a recognised English verb;
+        steps with no recognised prefix get the :data:`_UNKNOWN_ACTION`
+        sentinel and the execute fallback is suppressed. This closes the
+        fail-open path documented in CHANGELOG.md.
+        """
         step_name = step.get("step", "unknown")
         step_type = step.get("type", "unknown")
 
@@ -260,17 +286,30 @@ class DeterministicEvaluator:
 
         # Side-effect and reversible steps need tuple authorization.
         # Use explicit "requires" field if present, otherwise infer.
+        #
+        # Candidate list construction — tried in order against every tuple:
+        #   1. (inferred_action, inferred_resource) — prefix stripped, the
+        #      most specific match.
+        #   2. (inferred_action, step_name)         — full step name as
+        #      resource, in case the operator wrote a tuple keyed on the
+        #      raw name.
+        #   3. ("execute", step_name)               — generic-execute fallback,
+        #      ONLY appended when the inferred action is recognised. When the
+        #      step name does not match any English prefix, the inference
+        #      returns _UNKNOWN_ACTION and the third candidate is suppressed.
+        #      This closes the historical fail-open where a permissive
+        #      ``execute:*`` allow tuple silently authorised non-English step
+        #      names like ``borrar_registros``. See CHANGELOG.md.
         requires = step.get("requires")
         if requires and ":" in requires:
             # Explicit declaration: "read:data", "write:export"
             parts = requires.split(":", 1)
             candidates = [(parts[0], parts[1])]
         else:
-            # Infer from step name + try alternatives
             step_action, step_resource = self._infer_action_resource(step_name)
-            candidates = [(step_action, step_resource)]
-            candidates.append((step_action, step_name))
-            candidates.append(("execute", step_name))
+            candidates = [(step_action, step_resource), (step_action, step_name)]
+            if step_action != _UNKNOWN_ACTION:
+                candidates.append(("execute", step_name))
 
         for action, resource in candidates:
             for t in tuples:
@@ -292,11 +331,21 @@ class DeterministicEvaluator:
     def _infer_action_resource(self, step_name: str) -> tuple[str, str]:
         """Infer action and resource from step name conventions.
 
+        The prefix table is curated for English verb conventions
+        (``fetch_``, ``send_``, ``delete_``, etc.). Step names that do
+        not match any prefix — non-English names, custom vocabularies,
+        unconventional spellings — return :data:`_UNKNOWN_ACTION` for
+        the action component. This is intentional: callers MUST treat
+        the unknown sentinel as "no inference possible" rather than
+        falling back to a permissive default. See CHANGELOG.md for the
+        security rationale (the historical default of ``"execute"``
+        was a fail-open path).
+
         Examples:
-            "fetch_payroll_data" → ("read", "payroll")
-            "send_email"        → ("write", "email")
-            "delete_records"    → ("delete", "records")
-            "submit_request"    → ("write", "request")
+            "fetch_payroll_data"  → ("read", "payroll_data")
+            "send_email"          → ("write", "email")
+            "delete_records"      → ("delete", "records")
+            "borrar_registros"    → ("unknown", "borrar_registros")
         """
         name = step_name.lower()
 
@@ -310,7 +359,10 @@ class DeterministicEvaluator:
         elif name.startswith(("format_", "render_", "compute_", "build_", "identify_", "resolve_")):
             return "read", step_name  # preparatory, treated as read
         else:
-            action = "execute"
+            # No prefix matched — return the unknown sentinel rather than
+            # the permissive "execute" default. See module docstring for
+            # _UNKNOWN_ACTION and CHANGELOG.md for migration guidance.
+            action = _UNKNOWN_ACTION
 
         # Resource inference: strip the action prefix
         for prefix in ("fetch_", "get_", "read_", "query_", "delete_", "remove_",
