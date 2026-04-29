@@ -9,8 +9,15 @@ untouched.
 
 ## 1. Status
 
-Designed in Phase 1, implementation pending. No production code changes have
-landed for this feature yet — only this document.
+**Shipped on `main` in merge commit `9d2cb79` (`Merge branch
+'feat/streamable-http-upstream' into main`).** Phases 2 (implementation),
+3 (tests), and 4 (documentation) all completed on
+`feat/streamable-http-upstream` before the merge. The body below is the
+original Phase 1 design contract — preserved as a historical record of
+pre-implementation thinking. Deviations encountered during implementation
+are documented in the "Implementation addendum" appended to the end of
+this document, mirroring the discipline used on the downstream sibling
+([streamable-http-transport.md](./streamable-http-transport.md)).
 
 ## 2. Motivation
 
@@ -102,7 +109,8 @@ MCP clients automatically.
 ## 4. Locked design decisions
 
 These six decisions came out of the Phase 0 capability tests and open
-questions. They are the contract Phase 2 will follow literally.
+questions. They were the contract Phase 2 followed literally; deviations
+are recorded in the Implementation addendum.
 
 ### 4.1. Strategy — S1: mount FastMCP at `/mcp/` on the existing FastAPI app
 
@@ -203,7 +211,7 @@ bounce.
 The listener wiring needs `MorpheusProxy` to expose
 `_on_tools_changed` (or an equivalent registration hook) as a public
 callback registration. If the current implementation does not allow
-external subscribers, Phase 2 will add a small public registration method
+external subscribers, Phase 2 was expected to add a small public registration method
 (estimated +10–20 lines in `proxy_server.py`). Flagged as optional in §5.
 
 ## 5. Module layout
@@ -249,7 +257,7 @@ few lines that wire `upstream.py` in. Everything FastMCP-shaped lives in
 
 If `MorpheusProxy` does not currently allow external subscribers to
 `_on_tools_changed`, Phase 2 adds a small public registration method
-(e.g. `add_tools_changed_listener(callback)`). To verify in Phase 2; if
+(e.g. `add_tools_changed_listener(callback)`). Verified during Phase 2 implementation — see the addendum; if
 the existing surface already supports a listener, this file is untouched.
 
 ## 6. Public API surface
@@ -571,7 +579,149 @@ additional Morpheus configuration.
 
 ---
 
-**Phase 1 design complete. Phase 2 implementation will follow this
-contract literally. Any deviation discovered during implementation is
-flagged and resolved before code lands, mirroring the discipline used on
-`feat/streamable-http-downstream`.**
+**Phase 1 design originally complete; Phase 2 implementation followed
+this contract literally with the deviations recorded in the
+Implementation addendum below. The same discipline used on
+`feat/streamable-http-downstream` was applied: deviations were flagged
+and resolved before code landed.**
+
+---
+
+## Implementation addendum (post-shipped)
+
+The body of this document is preserved as a historical record of
+pre-implementation thinking. The notes below list the places where the
+landed code differs from — or goes beyond — what the design specified,
+and why.
+
+### FastMCP path-doubling discovery (Phase 2 Commit 4)
+
+The §8 sketch implied building the FastMCP sub-app with
+`http_app(path="/mcp/")` and mounting it at FastAPI's `/mcp/` prefix.
+That doubles the path: FastMCP's internal route ends up at `/mcp/mcp/`
+end-to-end. A live integration test caught this — `initialize` round-
+tripped, then the first `tools/list` call returned "Session terminated."
+
+Resolution: build the FastMCP sub-app with `path="/"` and let the
+FastAPI mount prefix carry the user-visible path. The user-visible path
+remains `/mcp/` as designed in §4.3; the FastMCP-internal path is now an
+implementation detail. Documented inline in
+`morpheus/proxy/upstream.py::UpstreamMcp._build_asgi_app`.
+
+§4.3's user-visible mount path is unchanged; the design contract holds.
+
+### Lifespan threading: post-construction works fine
+
+The §8 sketch showed `FastAPI(lifespan=…)` at construction time.
+Implementation (Commit 4) chose the post-construction form
+(`app.router.lifespan_context = …`) because the module-level
+`app = FastAPI(...)` declaration was load-bearing for existing
+imports — replacing it would have broken every test importing
+`http_proxy._build_transport`. A standalone repro confirmed both forms
+work; what mattered was the path-doubling fix above.
+
+The §8 regression-guard test (Layer 11c, `_test_A3_lifespan_regression_guard`)
+exercises the without-lifespan failure mode and confirms the documented
+"Task group is not initialized" failure — present in the code today,
+ready to fail loudly if a future refactor removes the wiring.
+
+### FastMCP runtime `add_tool` / `remove_tool` confirmed
+
+§4.7 was a make-or-break question at Phase 0 — does FastMCP support
+runtime tool registration after the server is serving requests? Phase 0
+verified yes via a live test. Phase 2 Commit 6 implemented
+`UpstreamMcp._handle_tools_changed` against this assumption. Layer 11c's
+Group D tests (D.1, D.2, D.3) confirm: tools added/removed at runtime
+become visible to a fresh `tools/list` call without a session bounce,
+and in-flight tool calls survive an unrelated tool's removal.
+
+Pinned dependency: `fastmcp>=3.1,<4` — same upper-bound discipline as
+the downstream feature's `mcp>=1.26,<2`.
+
+### Public listener API: needed and added
+
+§5.3 / §9.3 flagged whether `MorpheusProxy._on_tools_changed` already
+allowed external subscribers as an "optional" item to verify in Phase 2.
+The verification (Commit 1) confirmed it did *not* — `_on_tools_changed`
+was a private method that just logged and re-ran `_discover_tools()`.
+The fan-out machinery existed one layer down on `ToolDiscovery.on_change`
+but exposing it would have leaked discovery internals upward.
+
+A small public method `MorpheusProxy.add_tools_changed_listener(callback)`
+was added (~10 lines plus exception handling), with two unit tests
+(`tests/test_layer11_proxy_server.py:11.13`, `11.14`) proving the
+callback fires on re-discovery and that listener exceptions are caught
+and audited rather than killing the discovery loop.
+
+### `_on_reinit` shape: monkey-patched method, not constructor callback
+
+The design did not specify how upstream-related state-change events
+(beyond tools-changed) would be plumbed. The implementation adopted the
+same pattern the downstream feature established: a no-op overridable
+method on the relevant module (e.g.
+`StreamableHttpTransport._on_reinit`) that the consumer monkey-patches
+during construction. Keeps the transport / upstream modules unaware of
+`AuditLogger` and avoids an awkward construction-order callback.
+
+### `arguments_json: str` adapter — duplicated, not extracted
+
+§4.5 promised the adapter would mirror `mcp_bridge.py`. During Commit 3
+the question of extracting a shared helper between `mcp_bridge.py`
+(stdio) and `upstream.py` (HTTP) was considered and rejected: the
+bridge's adapter captures bridge-specific module globals
+(`_validated_intent`, `control_manager`) directly; threading those
+through a parameterised helper would have produced more code than the
+~50 lines duplicated. The two adapters live side-by-side; the duplicate
+is flagged as a follow-up cleanup target if and when a third consumer
+appears.
+
+The schema-faithful version of this surface (per-tool Pydantic models
+generated from MCP `inputSchema`) remains roadmap (§14).
+
+### Audit-log additions shipped beyond what §10.6 promised
+
+The design's audit shape promised additive-only changes: a `transport`
+field on existing tool-call events (delivered) and a new
+`downstream_session_reinitialized` event (delivered). The
+implementation also added `downstream_transport_selected`, fired once
+at `init_proxy` time. Useful for Layer 11c.3 (which asserts the audit
+log carries `transport=streamable_http` on forwarded calls) and cheap.
+Documented here for completeness.
+
+### Test framework: no pytest introduced
+
+§10's pre-commitment to stop if `asyncio.run` inside the existing sync
+harness proved untenable was *not* triggered. `UpstreamMcp` itself never
+calls `asyncio.run`; the test that drives the FastMCP server-side
+directly (Layer 11c.E.1) uses a short-lived
+`asyncio.new_event_loop() + run_until_complete` block that cohabits
+cleanly with the sync harness. Per-test FastAPI+uvicorn fixtures use
+the same daemon-thread pattern Layer 11b established for the downstream
+side.
+
+A second-fixture test mock was added beyond what §10 anticipated: the
+upstream tests use FastMCP-as-test-server for happy-path verification
+(Group A/B/C) but reuse the layer-11 mock-mcp-server (`tests/mock_mcp_server.py`)
+as the downstream backend. Both servers run in the same test process.
+Test count after Commit 6: 219 passing (from 187 baseline at start of
+upstream work + 25 upstream tests + 7 reorganised across-merge).
+
+### Final test inventory (Layer 11c)
+
+- Group A — Lifespan and basic wiring (3 tests including the regression
+  guard for §8).
+- Group B — Auth middleware (5 tests covering `MORPHEUS_PROXY_KEY` set
+  and unset, both header forms, and a cross-check that the REST
+  `_check_auth` helper behaviour is unchanged).
+- Group C — Tool registration / dispatch through Control 2 (5 tests
+  including admin-tools-on/off and a smoke test that `UpstreamMcp`
+  constructs without crashing).
+- Group D — Dynamic tool sync (3 tests).
+- Group E — Stateful vs stateless (2 tests).
+- Group F — Management tools toggle (3 tests including endpoint-locality
+  of the toggle).
+- Group G — Concurrent session safety (1 test plus a documentation-only
+  test acknowledging the pre-existing `_validated_intent` global-state
+  bug per §11 / §12.3).
+
+Total Layer 11c additions: 25 tests, all passing on `main`.
