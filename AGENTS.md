@@ -36,7 +36,7 @@ User -> [Control 1: is the intent clear and valid?]
 - **Confirmation before execution** — the system always shows the resolved intent before acting
 - **All decisions must be explainable** — every action is traceable to a validated intent
 - **Execution must be bounded** — timeouts, retries, and audit on every step
-- **Domain-agnostic** — any domain can be registered; Superset BI is the default example
+- **Domain-agnostic** — any domain can be registered; a generic Business Intelligence config ships as the default example
 
 ---
 
@@ -93,8 +93,9 @@ Every toggle change is logged in the audit trail with reason.
 
 ```
 morpheus/                          # Backend (Python)
+  __init__.py                      # Package shim — exposes morpheus.X import paths
   main.py                          # FastAPI backend
-  mcp_server.py                    # MCP server (Claude Desktop, Cursor, VS Code)
+  mcp_server.py                    # MCP server (stdio transport for desktop/IDE clients)
   controls.py                      # Control toggles manager
   audit/logger.py                  # Audit logging with pluggable sinks + secret redaction
   clarifier/clarifier.py           # Clarification logic + question generation
@@ -102,7 +103,7 @@ morpheus/                          # Backend (Python)
   domain/
     config.py                      # DomainConfig, FieldDefinition, CapabilityDefinition
     registry.py                    # DomainRegistry (register/get/list domains)
-    default_bi.py               # Default BI domain config
+    default_bi.py                  # Default BI domain config
   execution/
     engine.py                      # Plan executor (timeout + retry)
     plan.py                        # Plan builder
@@ -110,9 +111,9 @@ morpheus/                          # Backend (Python)
   intent/schema.py                 # DynamicIntent, Hypothesis (domain-agnostic)
   llm/
     provider.py                    # Abstract LLM provider + auto-detection
-    anthropic.py                   # Anthropic provider
-    openai.py                      # OpenAI provider
-    ollama.py                      # Ollama provider (local)
+    anthropic.py                   # Anthropic provider (env: ANTHROPIC_API_KEY)
+    openai.py                      # OpenAI provider (env: OPENAI_API_KEY)
+    ollama.py                      # Ollama provider (local, no key)
   parser/
     parser.py                      # Query parser (LLM-assisted)
     sanitizer.py                   # Prompt injection defense
@@ -125,7 +126,10 @@ morpheus/                          # Backend (Python)
     proxy_server.py                # MorpheusProxy (MCP proxy implementation)
     policy_checker.py              # Control 2: PolicyChecker (L1 + L2)
     discovery.py                   # Dynamic tool discovery from real MCP servers
-    mcp_bridge.py                  # Standalone MCP proxy bridge server
+    transport.py                   # Downstream transports: plain_jsonrpc + streamable_http
+    upstream.py                    # Upstream MCP streamable-HTTP server endpoint (/mcp/)
+    mcp_bridge.py                  # Standalone MCP proxy bridge (stdio transport)
+    http_proxy.py                  # HTTP proxy service (REST + /mcp/ on one FastAPI app)
   sdk/
     client.py                      # Python HTTP client (MorpheusClient)
     types.py                       # Pydantic response models
@@ -134,6 +138,9 @@ morpheus/                          # Backend (Python)
   tests/
     test_cases.py                  # Test cases
     mock_mcp_server.py             # Mock MCP server for proxy testing
+    test_layer11_proxy_server.py   # Proxy server + discovery + listener API
+    test_layer11b_streamable_http.py # Downstream streamable-HTTP transport
+    test_layer11c_upstream_streamable.py # Upstream MCP /mcp/ endpoint
 
 src/                               # Frontend (React 19 + TypeScript + Vite)
   App.tsx                          # Routes: / (Pipeline Tester), /config (Domain Configurator)
@@ -154,7 +161,12 @@ docs/                              # Documentation
   architecture.md
   configuration.md
   mcp-proxy.md
+  streamable-http-transport.md     # Downstream transport design
+  streamable-http-upstream.md      # Upstream /mcp/ endpoint design
+  multilingual-analysis.md         # Language-coupling audit
+  roadmap.md
   sdk.md
+  sdk-notes-phase2.md              # MCP SDK reconnaissance (frozen artifact)
   examples/
     basic_pipeline.py
     custom_domain.py
@@ -277,11 +289,15 @@ The LLM is used in **three** controlled places. Everything else is deterministic
 
 Configured via env vars. Auto-detects from available API keys.
 
-| Provider  | Env var               | Default model              |
-| --------- | --------------------- | -------------------------- |
-| Anthropic | `ANTHROPIC_API_KEY`   | `claude-sonnet-4-20250514` |
-| OpenAI    | `OPENAI_API_KEY`      | `gpt-4o`                   |
-| Ollama    | `OLLAMA_BASE_URL`     | `mistral` (local)          |
+| Provider  | Auth env var          | Model selection env var | Notes                  |
+| --------- | --------------------- | ----------------------- | ---------------------- |
+| Anthropic | `ANTHROPIC_API_KEY`   | `ANTHROPIC_MODEL`       | Remote, frontier-tier  |
+| OpenAI    | `OPENAI_API_KEY`      | `OPENAI_MODEL`          | Remote, frontier-tier  |
+| Ollama    | `OLLAMA_BASE_URL`     | `OLLAMA_MODEL`          | Local, no key required |
+
+Specific model strings are not pinned in this document — each provider's
+`<provider>_MODEL` env var defaults to the current stable model from
+that provider, which evolves over time.
 
 ---
 
@@ -319,7 +335,8 @@ Configured via env vars. Auto-detects from available API keys.
 
 ## MCP Server
 
-Exposes the pipeline as MCP tools for Claude Desktop, Cursor, VS Code (`morpheus/mcp_server.py`):
+Exposes the pipeline as MCP tools over the stdio transport for any
+MCP-compliant desktop or IDE client (`morpheus/mcp_server.py`):
 
 | Tool              | Purpose                                          |
 | ----------------- | ------------------------------------------------ |

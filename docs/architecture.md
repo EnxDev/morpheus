@@ -14,9 +14,13 @@ User Input
   v
 [Control 2: Action Validation]
   MCP Proxy -> Risk Classification (name + description) -> Coherence Check (D1 sanitize → D2 schema → D3 LLM) -> Forward/Block
+  ^ ^
+  | |
+  | +- REST   ingress: POST /proxy/call (proprietary endpoints)
+  +--- MCP    ingress: /mcp/ streamable-HTTP (spec-compliant endpoint, MCP clients)
   |
   v
-Real MCP Tool Server
+Real MCP Tool Server   (downstream transport: plain_jsonrpc | streamable_http)
 ```
 
 ## Pipeline Sequence
@@ -96,7 +100,7 @@ graph LR
         V[Validator] -->|YES/NO check| LP
         C[Clarifier] -->|gen question| LP
         CC2[L2 Coherence Check] -->|score coherence| LP
-        LP -->|ollama / openai / anthropic| O[LLM Backend]
+        LP -->|ollama / openai / anthropic provider| O[LLM Backend]
     end
 
     subgraph Deterministic["No LLM (pure Python)"]
@@ -171,6 +175,7 @@ Pluggable sinks: InMemory, Console, File (JSONL with rotation).
 
 ```
 morpheus/
+  __init__.py            # Package shim — exposes morpheus.X import paths
   main.py                # FastAPI app + endpoints
   controls.py            # Control 1 & 2 & coherence toggles
   audit/
@@ -201,21 +206,23 @@ morpheus/
     discovery.py         # Dynamic tool discovery
     policy_checker.py    # Risk + coherence + policy (L1 + L2)
     proxy_server.py      # MCP proxy server
-    mcp_bridge.py        # Standalone MCP proxy bridge (stdio, for Claude Desktop)
-    http_proxy.py        # HTTP proxy service (for any integration)
+    transport.py         # Downstream transports: plain_jsonrpc + streamable_http
+    upstream.py          # Upstream MCP streamable-HTTP server endpoint (/mcp/)
+    mcp_bridge.py        # Standalone MCP proxy bridge (stdio transport)
+    http_proxy.py        # HTTP proxy service (REST + /mcp/ on one FastAPI app)
   llm/
     provider.py          # Abstract LLM provider + auto-detection
-    openai.py            # OpenAI provider
-    ollama.py            # Ollama provider (local)
-    anthropic.py         # Anthropic Claude provider
+    openai.py            # OpenAI provider (env: OPENAI_API_KEY)
+    ollama.py            # Ollama provider (local, no key required)
+    anthropic.py         # Anthropic provider (env: ANTHROPIC_API_KEY)
   sdk/
     client.py            # HTTP client
     types.py             # Pydantic models
     adapters/
       fastapi_middleware.py  # ASGI middleware
-  mcp_server.py          # MCP tools for Claude Desktop/VS Code
+  mcp_server.py          # MCP tools (stdio transport for desktop/IDE clients)
   tests/
-    run_all_tests.py     # Full test suite (181 tests, 15 layers)
+    run_all_tests.py     # Full test suite (219 tests, 15 layers)
     test_cases.py        # E2E mock tests
     mock_mcp_server.py   # Mock MCP server for proxy testing
 ```
