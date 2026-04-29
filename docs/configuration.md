@@ -101,6 +101,67 @@ The file sink:
 - Rotates at 10MB (keeps 5 archive files)
 - Survives server restarts (append mode)
 
+## HTTP Proxy Configuration
+
+The HTTP proxy at `morpheus/proxy/http_proxy.py` exposes the proprietary
+REST surface (`/proxy/*`) and the MCP streamable-HTTP server endpoint
+(`/mcp/`) on the same FastAPI app. It speaks two downstream wire formats
+to the real MCP server it sits in front of.
+
+### CLI flags
+
+| Flag | Description | Default |
+|---|---|---|
+| `--real-server URL` | Downstream MCP server URL | `http://localhost:5010` |
+| `--port N` | Port for the HTTP proxy | `5020` |
+| `--transport {plain_jsonrpc,streamable_http}` | Downstream wire format | `plain_jsonrpc` |
+| `--mcp-path PATH` | Path to mount the upstream MCP server endpoint | `/mcp/` |
+| `--mcp-stateless` | Run the upstream MCP server in stateless mode | off (stateful) |
+| `--no-admin-mcp-tools` | Suppress the three management tools on the MCP surface | off (exposed) |
+
+### Environment variables
+
+Each CLI flag has an env-var fallback. The CLI value wins if both are set.
+
+| Env var | Type | Default | Equivalent flag |
+|---|---|---|---|
+| `MORPHEUS_REAL_SERVER` | URL string | `http://localhost:5010` | `--real-server` |
+| `MORPHEUS_PROXY_PORT` | integer | `5020` | `--port` |
+| `MORPHEUS_PROXY_KEY` | string | empty (dev mode) | — (auth header value) |
+| `MORPHEUS_DOWNSTREAM_TRANSPORT` | `plain_jsonrpc` \| `streamable_http` | `plain_jsonrpc` | `--transport` |
+| `MORPHEUS_MCP_PATH` | path | `/mcp/` | `--mcp-path` |
+| `MORPHEUS_MCP_STATELESS` | truthy (`1`/`true`/`yes`/`on`) | empty (stateful) | `--mcp-stateless` |
+| `MORPHEUS_NO_ADMIN_MCP_TOOLS` | truthy (`1`/`true`/`yes`/`on`) | empty (exposed) | `--no-admin-mcp-tools` |
+
+When `MORPHEUS_PROXY_KEY` is empty, both REST and the upstream `/mcp/`
+endpoint are open (dev mode). When set, both require either
+`X-Proxy-Key: <key>` or `Authorization: Bearer <key>` on every request;
+mismatched keys produce HTTP 401 before the request reaches the proxy
+or the MCP sub-app. Auth parity between the two surfaces is enforced by
+construction — there is no combination where REST and MCP disagree on
+whether the proxy is authenticated.
+
+### Examples
+
+```bash
+# Dev mode (no key), default downstream, default upstream MCP path
+python proxy/http_proxy.py --real-server http://localhost:5010
+
+# Production-style: keyed auth, streamable-HTTP downstream, custom MCP mount path
+MORPHEUS_PROXY_KEY=<secret> \
+  python proxy/http_proxy.py \
+  --real-server http://localhost:5008/mcp \
+  --transport streamable_http \
+  --mcp-path /agents/mcp/
+
+# Suppress the three admin MCP tools (proxy-only client surface)
+python proxy/http_proxy.py --real-server http://localhost:5010 --no-admin-mcp-tools
+```
+
+See [MCP Proxy](mcp-proxy.md) for the proxy's architecture and
+[streamable-http-upstream.md](streamable-http-upstream.md) for the
+upstream endpoint design.
+
 ## MCP Proxy Risk Patterns
 
 Default risk classification patterns:
