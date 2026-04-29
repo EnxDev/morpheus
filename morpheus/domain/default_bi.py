@@ -236,7 +236,7 @@ BI_VALIDATION_PROMPT = (
 
 DEFAULT_BI_CONFIG = DomainConfig(
     name="generic_bi",
-    domain_description="Business Intelligence query parsing for Apache Superset",
+    domain_description="Business Intelligence query parsing",
     fields=BI_FIELDS,
     capabilities=BI_CAPABILITIES,
     execution_plans=BI_EXECUTION_PLANS,
