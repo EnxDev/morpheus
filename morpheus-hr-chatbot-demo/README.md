@@ -1,6 +1,6 @@
-# HR Assistant — Intent Guard Demo
+# HR Assistant — Morpheus Demo
 
-A realistic HR self-service chatbot that demonstrates Intent Guard (Morpheus) integration. Employees ask questions in natural language about leave, payroll, attendance and org chart. Every request goes through the Morpheus validation pipeline before touching any data.
+A realistic HR self-service chatbot that demonstrates Morpheus integration. Employees ask questions in natural language about leave, payroll, attendance and org chart. Every request goes through the Morpheus validation pipeline before touching any data.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ A realistic HR self-service chatbot that demonstrates Intent Guard (Morpheus) in
 Employee (browser)
     │
     ▼
-HR Assistant (port 9000)     ──►   Intent Guard / Morpheus (port 8000)
+HR Assistant (port 9000)     ──►   Morpheus (port 8000)
     │                                    │
     │  1. POST /api/chat                 │  POST /api/parse     → Control 1
     │  ◄─── clarification? ◄─────────── │  POST /api/clarify
@@ -21,7 +21,7 @@ Fake HR Database                    Audit Log
 
 ## Quick Start
 
-### 1. Start Morpheus (Intent Guard)
+### 1. Start Morpheus
 
 ```bash
 cd morpheus
