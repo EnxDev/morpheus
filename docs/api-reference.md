@@ -197,7 +197,7 @@ List all registered domains.
 ```json
 {
   "generic_bi": {
-    "description": "Business Intelligence query parsing for Apache Superset",
+    "description": "Generic Business Intelligence query parsing",
     "fields": [
       {"name": "measure", "label": "Measure", "description": "...", "threshold": 0.8, "ambiguity_threshold": 0.5},
       {"name": "time_range", "label": "Time Range", "description": "...", "threshold": 0.8, "ambiguity_threshold": 0.5},
