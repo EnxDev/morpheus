@@ -4,7 +4,7 @@
 
 ```bash
 git clone https://github.com/EnxDev/morpheus.git
-cd intent-guard
+cd morpheus
 
 # Python backend
 python -m venv .venv
@@ -15,13 +15,15 @@ pip install fastmcp
 # Environment
 cp morpheus/.env.example morpheus/.env
 
-# Run the server (uses OpenAI by default — set OPENAI_API_KEY in .env)
+# Run the server. The provider is auto-detected from whichever API key
+# is set in .env (OPENAI_API_KEY, ANTHROPIC_API_KEY) or falls back to a
+# local Ollama install when no key is found.
 cd morpheus
 uvicorn main:app --reload --port 8000
 
-# For local validation without API keys, use Ollama instead:
+# For local validation without API keys, use Ollama:
 #   Set MORPHEUS_LLM_PROVIDER=ollama in .env
-#   ollama pull mistral && ollama serve
+#   ollama pull <preferred-model> && ollama serve
 
 # Frontend (optional)
 cd ..
@@ -34,7 +36,7 @@ npm run dev
 ```bash
 cd morpheus
 
-# Full test suite (148 tests across 15 layers)
+# Full test suite (219 tests across 15 layers)
 python tests/run_all_tests.py
 
 # E2E mock tests only (no LLM needed)
@@ -48,20 +50,20 @@ npm run typecheck
 ## Project Structure
 
 - `morpheus/` — Main Python package
-  - `llm/` — LLM provider abstraction (Ollama, OpenAI, Anthropic)
+  - `llm/` — LLM provider abstraction (Ollama, OpenAI, Anthropic providers)
   - `parser/` — NL to structured intent (LLM)
   - `validator/` — Schema + LLM validation
   - `clarifier/` — Interactive field resolution (LLM)
-  - `policies/` — Confidence thresholds
+  - `policies/` — Confidence thresholds, IBAC authorization tuples
   - `decision_engine/` — Deterministic action selection
   - `execution/` — Plan builder + executor
-  - `proxy/` — MCP Proxy (Control 2)
+  - `proxy/` — MCP Proxy (Control 2): downstream transports + upstream MCP server endpoint
   - `audit/` — Audit logger with pluggable sinks
   - `domain/` — Domain-agnostic config system
   - `sdk/` — Python client + FastAPI middleware
   - `controls.py` — Independent control toggles
   - `main.py` — FastAPI server
-  - `mcp_server.py` — MCP tools for Claude Desktop/VS Code
+  - `mcp_server.py` — MCP tools (stdio transport for desktop/IDE clients)
   - `tests/` — Test suite
 - `src/` — React testing UI
 - `docs/` — Documentation

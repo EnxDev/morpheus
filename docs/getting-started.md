@@ -3,14 +3,14 @@
 ## Prerequisites
 
 - Python 3.11+
-- An OpenAI API key (default provider) **or** [Ollama](https://ollama.com) for local validation
+- An API key for a supported remote provider (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) **or** [Ollama](https://ollama.com) for local validation
 - Node.js 20+ (for the testing UI, optional)
 
 ## Installation
 
 ```bash
 git clone https://github.com/EnxDev/morpheus.git
-cd intent-guard
+cd morpheus
 
 # Python backend
 python -m venv .venv
@@ -20,7 +20,7 @@ pip install fastmcp   # for MCP server support
 
 # Environment config
 cp morpheus/.env.example morpheus/.env
-# Edit morpheus/.env — add your OPENAI_API_KEY or ANTHROPIC_API_KEY
+# Edit morpheus/.env — set OPENAI_API_KEY, ANTHROPIC_API_KEY, or use Ollama (no key)
 # Provider is auto-detected from which key is present. No key = Ollama (local)
 ```
 
@@ -31,8 +31,8 @@ cp morpheus/.env.example morpheus/.env
 cd morpheus
 uvicorn main:app --reload --port 8000
 
-# If using Ollama instead of OpenAI:
-#   ollama pull mistral
+# If using a local Ollama provider:
+#   ollama pull <preferred-model>
 #   ollama serve
 ```
 
@@ -111,19 +111,41 @@ The UI runs in mock mode by default. Set `VITE_MOCK_DATA=false` in the root `.en
 
 ## Environment Variables
 
+### LLM provider selection
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MORPHEUS_LLM_PROVIDER` | auto-detect | Auto: `OPENAI_API_KEY` → openai, `ANTHROPIC_API_KEY` → anthropic, fallback → ollama |
-| `OPENAI_API_KEY` | (none) | Required when provider is `openai` |
-| `OPENAI_MODEL` | `gpt-4o` | Model for OpenAI provider |
-| `ANTHROPIC_API_KEY` | (none) | Required when provider is `anthropic` |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-20250514` | Model for Anthropic provider |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (local only) |
-| `OLLAMA_MODEL` | `mistral` | Model for Ollama provider (local only) |
-| `ANTHROPIC_MAX_TOKENS` | `1024` | Max tokens for Anthropic provider |
 | `LLM_PROVIDER` | (none) | Alias for `MORPHEUS_LLM_PROVIDER` |
-| `MORPHEUS_AUDIT_FILE` | (none) | Path for JSONL audit file |
+| `OPENAI_API_KEY` | (none) | Required when provider is `openai` |
+| `OPENAI_MODEL` | provider-default | Specific model selection for the OpenAI provider |
+| `ANTHROPIC_API_KEY` | (none) | Required when provider is `anthropic` |
+| `ANTHROPIC_MODEL` | provider-default | Specific model selection for the Anthropic provider |
+| `ANTHROPIC_MAX_TOKENS` | `1024` | Max tokens for the Anthropic provider |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (local only) |
+| `OLLAMA_MODEL` | provider-default | Specific model selection for the Ollama provider |
+
+### HTTP proxy configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MORPHEUS_REAL_SERVER` | `http://localhost:5010` | Downstream MCP server URL |
+| `MORPHEUS_PROXY_PORT` | `5020` | Port for the HTTP proxy |
+| `MORPHEUS_PROXY_KEY` | (empty — open) | Proxy auth key; when set, both REST and `/mcp/` require it |
+| `MORPHEUS_DOWNSTREAM_TRANSPORT` | `plain_jsonrpc` | `plain_jsonrpc` or `streamable_http` |
+| `MORPHEUS_MCP_PATH` | `/mcp/` | Mount path for the upstream MCP streamable-HTTP endpoint |
+| `MORPHEUS_MCP_STATELESS` | (empty — stateful) | Truthy → stateless mode (each POST is independent) |
+| `MORPHEUS_NO_ADMIN_MCP_TOOLS` | (empty — exposed) | Truthy → suppress the three management MCP tools |
+
+### Other
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MORPHEUS_AUDIT_FILE` | (none) | Path for JSONL audit file (file sink with rotation) |
 | `VITE_MOCK_DATA` | `true` | Set to `false` to connect UI to real backend |
+
+See [Configuration](configuration.md#http-proxy-configuration) for the
+matching CLI flags and example invocations.
 
 ## Running Tests
 
@@ -132,12 +154,15 @@ cd morpheus
 python tests/run_all_tests.py
 ```
 
-The test suite covers 15 layers (148 tests): schema, domain, confidence, sanitizer, coherence, session guard, validator, clarifier, decision engine, execution, audit, controls, proxy, MCP server, IBAC, and FastAPI endpoints.
+The test suite covers 15 layers (219 tests): schema, domain, confidence, sanitizer, coherence, session guard, validator, clarifier, decision engine, execution, audit, controls, proxy (server + downstream transports + upstream MCP endpoint), MCP server, IBAC, and FastAPI endpoints.
 
 ## Next Steps
 
 - [Architecture](architecture.md) — understand the two controls
-- [Configuration](configuration.md) — customize domains and policies
+- [Configuration](configuration.md) — customize domains, policies, and HTTP proxy flags
 - [API Reference](api-reference.md) — all REST endpoints
-- [MCP Proxy](mcp-proxy.md) — set up Control 2 (action validation)
+- [MCP Proxy](mcp-proxy.md) — set up Control 2 (action validation), with both the downstream transport and the upstream MCP server endpoint
+- [Streamable-HTTP downstream transport](streamable-http-transport.md) — design rationale for talking streamable-HTTP to backend MCP servers
+- [Streamable-HTTP upstream MCP endpoint](streamable-http-upstream.md) — design rationale for the `/mcp/` server endpoint
+- [Multilingual support analysis](multilingual-analysis.md) — language-coupling audit and roadmap
 - [SDK](sdk.md) — Python client and FastAPI middleware
