@@ -15,6 +15,12 @@ Run:
 
     # With API key (recommended):
     MORPHEUS_PROXY_KEY=my-secret python proxy/http_proxy.py --real-server http://localhost:5010
+
+    # Against a streamable-HTTP MCP server (e.g. FastMCP, Superset MCP):
+    python proxy/http_proxy.py --real-server http://localhost:5008/mcp --transport streamable_http
+
+    # Or via env var (same effect as --transport):
+    MORPHEUS_DOWNSTREAM_TRANSPORT=streamable_http python proxy/http_proxy.py --real-server http://localhost:5008/mcp
 """
 
 from __future__ import annotations
@@ -39,6 +45,14 @@ from audit.logger import AuditLogger
 from controls import ControlManager
 from proxy.proxy_server import MorpheusProxy
 from proxy.policy_checker import PolicyChecker
+from proxy.transport import (
+    DownstreamTransport,
+    PlainJsonRpcTransport,
+    StreamableHttpTransport,
+    TRANSPORT_PLAIN_JSONRPC,
+    TRANSPORT_STREAMABLE_HTTP,
+    VALID_TRANSPORTS,
+)
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -204,15 +218,38 @@ async def proxy_audit(request: Request, last_n: int = 50):
 
 # ── Startup ──────────────────────────────────────────────────────────────────
 
-def init_proxy(real_server_url: str) -> None:
+def _build_transport(real_server_url: str, transport_name: str) -> DownstreamTransport:
+    """Construct the chosen downstream transport. Fails loud on unknown name.
+
+    The validity check here is a belt-and-braces guard: argparse's
+    ``choices=`` already rejects bad CLI values, but env-var values bypass
+    that path, so we validate again before instantiation.
+    """
+    if transport_name not in VALID_TRANSPORTS:
+        raise ValueError(
+            f"Unknown downstream transport {transport_name!r}. "
+            f"Valid values: {sorted(VALID_TRANSPORTS)}"
+        )
+    if transport_name == TRANSPORT_STREAMABLE_HTTP:
+        return StreamableHttpTransport(real_server_url)
+    return PlainJsonRpcTransport(real_server_url)
+
+
+def init_proxy(real_server_url: str, transport_name: str = TRANSPORT_PLAIN_JSONRPC) -> None:
     """Initialize the proxy connection to the real MCP server."""
     global _proxy, _control_manager
 
     logger = AuditLogger()
     _control_manager = ControlManager(logger=logger)
 
+    transport = _build_transport(real_server_url, transport_name)
+    logger.log("downstream_transport_selected", {
+        "transport": transport.name,
+        "server_url": real_server_url,
+    })
+
     _proxy = MorpheusProxy(
-        real_server_url=real_server_url,
+        real_server_or_transport=transport,
         policy_checker=PolicyChecker(),
         logger=logger,
     )
@@ -233,12 +270,30 @@ def main():
         default=int(os.environ.get("MORPHEUS_PROXY_PORT", "5020")),
         help="Port for the HTTP proxy (default: 5020)",
     )
+    parser.add_argument(
+        "--transport",
+        default=os.environ.get("MORPHEUS_DOWNSTREAM_TRANSPORT", TRANSPORT_PLAIN_JSONRPC),
+        choices=sorted(VALID_TRANSPORTS),
+        help=(
+            "Downstream MCP wire format. 'plain_jsonrpc' (default) is the "
+            "original Morpheus JSON-RPC-over-HTTP dialect used by the demo "
+            "servers. 'streamable_http' is the MCP spec's streamable-HTTP "
+            "transport, required for servers like FastMCP-in-streamable mode."
+        ),
+    )
     args = parser.parse_args()
 
-    init_proxy(args.real_server)
+    try:
+        init_proxy(args.real_server, args.transport)
+    except ValueError as exc:
+        # Unknown transport value coming via the env var (argparse's
+        # choices= already guards the CLI path).
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     print(f"Morpheus HTTP Proxy starting...", file=sys.stderr)
     print(f"  Real server: {args.real_server}", file=sys.stderr)
+    print(f"  Transport:   {args.transport}", file=sys.stderr)
     print(f"  Proxy port:  http://localhost:{args.port}", file=sys.stderr)
     print(f"  Discovered:  {_proxy.tool_count} tools", file=sys.stderr)
     print(f"  Auth:        {'API key required' if PROXY_API_KEY else 'OPEN (set MORPHEUS_PROXY_KEY)'}", file=sys.stderr)
