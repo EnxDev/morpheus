@@ -51,6 +51,24 @@ Surfaced by the multilingual analysis at `docs/multilingual-analysis.md` §2.6.
 - `tool_call_forwarded` and `tool_call_failed` audit events include a `transport` field. Additive; no existing field changed.
 - New audit event `downstream_session_reinitialized` emitted when the streamable-HTTP transport recovers from a lost session.
 
+### Added — upstream MCP streamable-HTTP server endpoint
+
+- New `/mcp/` endpoint mounted on the existing FastAPI HTTP-proxy app, speaking the MCP spec's streamable-HTTP transport (`initialize` handshake, `Mcp-Session-Id` headers, JSON-or-SSE responses, `tools/list_changed` notifications). MCP-compliant HTTP clients can now connect to Morpheus directly; tool calls flow through the same Control 2 pipeline as the existing REST surface.
+- New module `morpheus/proxy/upstream.py` owning FastMCP construction, tool registration, the auth middleware, and the lifespan helper.
+- Three new CLI flags on `proxy/http_proxy.py`: `--mcp-path` (default `/mcp/`), `--mcp-stateless` (default off), `--no-admin-mcp-tools` (default off — admin tools exposed). Each has a corresponding env var: `MORPHEUS_MCP_PATH`, `MORPHEUS_MCP_STATELESS`, `MORPHEUS_NO_ADMIN_MCP_TOOLS`.
+- Three management tools (`set_validated_intent`, `get_proxy_status`, `get_proxy_audit`) exposed on the upstream MCP surface alongside the proxied catalogue, mirroring the stdio bridge's management surface. Sit behind the same `MORPHEUS_PROXY_KEY` check as the REST endpoints. Suppressible via `--no-admin-mcp-tools`.
+- New public API on `MorpheusProxy`: `add_tools_changed_listener(callback)` lets external subscribers (the upstream module being the first user) react to downstream `tools/list_changed` events. Listener exceptions are caught and emitted as a `tools_changed_listener_failed` audit event.
+- Test layer 11c (`tests/test_layer11c_upstream_streamable.py`) covering: lifespan + basic wiring (Group A), auth middleware (Group B), tool dispatch through Control 2 (Group C), dynamic tool sync (Group D), stateful vs stateless (Group E), management-tools toggle (Group F), concurrent session safety (Group G). Plus a regression guard that fails loudly if the FastMCP lifespan threading is ever removed.
+
+### Changed — upstream-related
+
+- `MorpheusProxy.__init__` now accepts an optional `add_tools_changed_listener` registration via the public method described above; the existing internal `_on_tools_changed` continues to work unchanged.
+- An `UpstreamMcp` instance is constructed during `init_proxy` and mounted at the configured `--mcp-path` with an ASGI auth middleware enforcing the same `MORPHEUS_PROXY_KEY` rules as the REST endpoints. The mount uses FastMCP's internal `path="/"` plus the FastAPI mount prefix to avoid the path-doubling that arises when both layers carry the same `/mcp/` prefix; documented inline in `proxy/upstream.py` and in the streamable-http-upstream design doc's implementation addendum.
+
+### Added — packaging
+
+- `morpheus/__init__.py` shim turns the directory into a regular package and provides the project docstring + `__version__`. Enables documented `from morpheus.proxy import …`, `from morpheus.policies.ibac import …`, `from morpheus.sdk import …` imports without changing how tests run from inside the directory.
+
 ## [0.1.0-alpha] — 2026-03-28
 
 ### Added
