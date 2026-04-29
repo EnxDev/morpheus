@@ -7,6 +7,7 @@ from policies.ibac import (
     IntentPolicyMapper,
     DeterministicEvaluator,
     TupleEvaluator,
+    _UNKNOWN_ACTION,
 )
 from domain.registry import DomainRegistry
 
@@ -274,9 +275,91 @@ def register(run_fn=run):
         r = e.evaluate(tuples, bad_step)
         assert r.allowed is False  # payroll:all_salaries is sensitive, wildcard blocked
 
+    # ── Action default fix: non-English step names ──────────────────
+    # See CHANGELOG.md "IBAC fail-open fix for non-English step names"
+    # and docs/multilingual-analysis.md §2.6 for the security context.
+
+    def test_15_25():
+        # Regression matrix: every English action prefix still infers
+        # the historically-correct (action, resource) pair.
+        e = DeterministicEvaluator()
+        cases = [
+            ("fetch_payroll_data", "read",   "payroll_data"),
+            ("delete_records",     "delete", "records"),
+            ("send_email",         "write",  "email"),
+            ("read_dashboard",     "read",   "dashboard"),
+            ("create_chart",       "write",  "chart"),
+            ("remove_user",        "delete", "user"),
+            ("get_status",         "read",   "status"),
+        ]
+        for step_name, expected_action, expected_resource in cases:
+            action, resource = e._infer_action_resource(step_name)
+            assert action == expected_action, (step_name, action, expected_action)
+            assert resource == expected_resource, (step_name, resource, expected_resource)
+
+    def test_15_26():
+        # Non-English step name + permissive execute:* allow tuple → BLOCKED.
+        # This is the historical fail-open path that the fix closes.
+        e = DeterministicEvaluator()
+        tuples = [AuthorizationTuple("system", "execute", "*")]
+        step = {"step": "borrar_registros", "type": "side_effect"}
+        r = e.evaluate(tuples, step)
+        assert r.allowed is False, (
+            "borrar_registros must NOT match an execute:* allow tuple "
+            "after the fail-open fix. CHANGELOG.md migration: declare "
+            "an explicit requires: field on the step."
+        )
+        # Reason string surfaces the candidates tried, including the
+        # unknown sentinel — operators reading audit logs need to see why.
+        assert "unknown" in r.reason, r.reason
+        assert "borrar_registros" in r.reason, r.reason
+
+    def test_15_27():
+        # Non-English step name + tuple keyed on the step name itself,
+        # with the action wildcard, IS allowed. Confirms operator-explicit
+        # wildcard semantics are preserved by the fix.
+        e = DeterministicEvaluator()
+        tuples = [AuthorizationTuple("system", "*", "borrar_registros")]
+        step = {"step": "borrar_registros", "type": "side_effect"}
+        r = e.evaluate(tuples, step)
+        assert r.allowed is True, r.reason
+        assert r.matched_tuple is not None
+        assert r.matched_tuple.action == "*"
+
+    def test_15_28():
+        # Migration path: declaring an explicit requires: field on a
+        # non-English step name is the documented fix for deployments
+        # that hit the fail-closed behavior.
+        e = DeterministicEvaluator()
+        tuples = [AuthorizationTuple("system", "delete", "records")]
+        step = {
+            "step": "borrar_registros",
+            "type": "side_effect",
+            "requires": "delete:records",
+        }
+        r = e.evaluate(tuples, step)
+        assert r.allowed is True, r.reason
+        assert r.matched_tuple is not None
+        assert r.matched_tuple.action == "delete"
+        assert r.matched_tuple.resource == "records"
+
+    def test_15_29():
+        # The sentinel constant is importable and has the documented value.
+        assert _UNKNOWN_ACTION == "unknown"
+        # Round-trip: the inference function actually returns it for a
+        # non-prefixed name.
+        e = DeterministicEvaluator()
+        action, _ = e._infer_action_resource("borrar_registros")
+        assert action == _UNKNOWN_ACTION
+
     run_fn("15.19", "Evaluator: implements TupleEvaluator Protocol", test_15_19)
     run_fn("15.20", "Integration: domain config → mapper → evaluator", test_15_20)
     run_fn("15.21", "Wildcard covers non-sensitive resources", test_15_21)
     run_fn("15.22", "Wildcard BLOCKED on sensitive resources", test_15_22)
     run_fn("15.23", "Exact tuple works on sensitive resources", test_15_23)
     run_fn("15.24", "Evaluator: sensitive resource blocks wildcard", test_15_24)
+    run_fn("15.25", "English prefix regression matrix: 7 verbs infer correctly", test_15_25)
+    run_fn("15.26", "non-English step + execute:* tuple → BLOCKED (fail-open fix)", test_15_26)
+    run_fn("15.27", "non-English step + *:step_name tuple → allowed (wildcard preserved)", test_15_27)
+    run_fn("15.28", "non-English step + explicit requires: → allowed (migration path)", test_15_28)
+    run_fn("15.29", "_UNKNOWN_ACTION sentinel is importable and round-trips", test_15_29)
