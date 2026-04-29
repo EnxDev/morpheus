@@ -8,6 +8,10 @@ coverImage: null
 published: true
 ---
 
+> **Note**: this post was written in March 2026, before the streamable-HTTP
+> transport features and IBAC security fix shipped. See the [README](../../README.md)
+> and [CHANGELOG](../../CHANGELOG.md) for current state.
+
 > **Note:** Morpheus is a prototype under active development. Control 1 and Control 2 are functional and tested (148 tests). SaaS features (dashboard, multi-tenancy, persistent audit) are not built yet.
 
 ## What existing frameworks miss
