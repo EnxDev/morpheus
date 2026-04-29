@@ -12,7 +12,7 @@ or inject a pre-built transport (e.g. ``StreamableHttpTransport``).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from audit.logger import AuditLogger
 from proxy.discovery import ToolDiscovery, ToolDefinition
@@ -53,6 +53,11 @@ class MorpheusProxy:
         # as a plain method overridable here — see transport.py for why
         # it is not a constructor callback.
         self._transport._on_reinit = self._on_session_reinit
+
+        # External subscribers to "downstream tools changed" events.
+        # Initialised before _discover_tools() so a callback registered
+        # immediately after construction never misses a fire.
+        self._tools_changed_listeners: list[Callable[[], None]] = []
 
         # Discover tools from the real server
         self._tools: dict[str, ToolDefinition] = {}
@@ -104,11 +109,35 @@ class MorpheusProxy:
         })
 
     def _on_tools_changed(self) -> None:
-        """Called when tools/list_changed notification is received."""
+        """Called when tools/list_changed notification is received.
+
+        Re-discovers tools, then notifies any external listeners
+        registered via :meth:`add_tools_changed_listener`. Listener
+        exceptions are caught and logged so a misbehaving subscriber
+        cannot block the proxy or its other subscribers.
+        """
         self._logger.log("tools_list_changed", {
             "server_url": self._real_server_url,
         })
         self._discover_tools()
+        for listener in list(self._tools_changed_listeners):
+            try:
+                listener()
+            except Exception as e:
+                self._logger.log("tools_changed_listener_failed", {
+                    "error": str(e),
+                })
+
+    def add_tools_changed_listener(self, callback: Callable[[], None]) -> None:
+        """Register a zero-arg callback fired after each tool re-discovery.
+
+        Used by the upstream MCP endpoint to re-sync its FastMCP tool
+        catalogue when the downstream server announces tools/list_changed.
+        Callbacks fire synchronously on the discovery polling thread —
+        keep them quick and exception-safe; raised exceptions are caught
+        and logged but not propagated.
+        """
+        self._tools_changed_listeners.append(callback)
 
     def _on_session_reinit(self) -> None:
         """Called by the transport after a one-shot session re-init.

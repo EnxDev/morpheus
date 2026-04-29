@@ -26,6 +26,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -53,6 +54,7 @@ from proxy.transport import (
     TRANSPORT_STREAMABLE_HTTP,
     VALID_TRANSPORTS,
 )
+from proxy.upstream import ProxyKeyAuthMiddleware, UpstreamMcp
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -66,6 +68,18 @@ MAX_RESPONSE_CHARS = 100_000
 _proxy: MorpheusProxy | None = None
 _control_manager: ControlManager | None = None
 _validated_intent: dict | None = None
+_upstream_mcp: UpstreamMcp | None = None
+
+
+def _get_validated_intent() -> dict | None:
+    """Read the module-level intent global. Used by UpstreamMcp's tools."""
+    return _validated_intent
+
+
+def _set_validated_intent(intent: dict) -> None:
+    """Write the module-level intent global. Used by the MCP admin tool."""
+    global _validated_intent
+    _validated_intent = intent
 
 
 # ── Request/Response models ──────────────────────────────────────────────────
@@ -235,9 +249,24 @@ def _build_transport(real_server_url: str, transport_name: str) -> DownstreamTra
     return PlainJsonRpcTransport(real_server_url)
 
 
-def init_proxy(real_server_url: str, transport_name: str = TRANSPORT_PLAIN_JSONRPC) -> None:
-    """Initialize the proxy connection to the real MCP server."""
-    global _proxy, _control_manager
+def init_proxy(
+    real_server_url: str,
+    transport_name: str = TRANSPORT_PLAIN_JSONRPC,
+    *,
+    mcp_path: str = "/mcp/",
+    mcp_stateless: bool = False,
+    expose_admin_mcp_tools: bool = True,
+) -> None:
+    """Initialize the proxy connection to the real MCP server.
+
+    Also stands up the upstream MCP streamable-HTTP endpoint at
+    ``mcp_path`` (mounted on the same FastAPI app) and threads its
+    lifespan context onto the parent app's router. See
+    ``docs/streamable-http-upstream.md`` §8 for why the lifespan
+    threading is mandatory — without it the first MCP request fails
+    with "Task group is not initialized".
+    """
+    global _proxy, _control_manager, _upstream_mcp
 
     logger = AuditLogger()
     _control_manager = ControlManager(logger=logger)
@@ -253,6 +282,40 @@ def init_proxy(real_server_url: str, transport_name: str = TRANSPORT_PLAIN_JSONR
         policy_checker=PolicyChecker(),
         logger=logger,
     )
+
+    # ── Upstream MCP endpoint ────────────────────────────────────────
+    # Build the upstream module after _proxy exists. It captures
+    # intent_provider / intent_setter as closures over the module-level
+    # globals so live updates from REST `/proxy/intent` and from the
+    # `set_validated_intent` MCP tool stay coherent.
+    _upstream_mcp = UpstreamMcp(
+        _proxy,
+        expose_admin_tools=expose_admin_mcp_tools,
+        stateless=mcp_stateless,
+        mount_path=mcp_path,
+        control_manager=_control_manager,
+        intent_provider=_get_validated_intent,
+        intent_setter=_set_validated_intent,
+    )
+
+    # ── Lifespan wiring (THE FOOTGUN — see design doc §8) ────────────
+    # FastAPI does NOT propagate a sub-app's lifespan automatically.
+    # We must thread FastMCP's StreamableHTTPSessionManager.run() through
+    # the parent app's lifespan or the first /mcp/ request fails with
+    # "Task group is not initialized" (start-time looks fine; failure
+    # only at request time).
+    upstream = _upstream_mcp
+    @contextlib.asynccontextmanager
+    async def _mcp_lifespan(parent_app):
+        async with upstream.lifespan_context(parent_app):
+            yield
+    app.router.lifespan_context = _mcp_lifespan
+
+    # ── Mount the auth-wrapped MCP sub-app ───────────────────────────
+    # Wrapped so the same MORPHEUS_PROXY_KEY check that guards REST
+    # also guards /mcp/. Scoped to the mount; REST's per-request
+    # _check_auth helper continues to gate /proxy/* unchanged.
+    app.mount(mcp_path, ProxyKeyAuthMiddleware(_upstream_mcp.asgi_app, PROXY_API_KEY))
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -281,10 +344,39 @@ def main():
             "transport, required for servers like FastMCP-in-streamable mode."
         ),
     )
+    parser.add_argument(
+        "--mcp-path",
+        default=os.environ.get("MORPHEUS_MCP_PATH", "/mcp/"),
+        help="Path to mount the upstream MCP server endpoint (default: /mcp/)",
+    )
+    parser.add_argument(
+        "--mcp-stateless",
+        action="store_true",
+        default=_truthy(os.environ.get("MORPHEUS_MCP_STATELESS", "")),
+        help=(
+            "Run the upstream MCP server in stateless mode (each POST is a "
+            "fresh transport, no session tracking). Default: stateful."
+        ),
+    )
+    parser.add_argument(
+        "--no-admin-mcp-tools",
+        action="store_true",
+        default=_truthy(os.environ.get("MORPHEUS_NO_ADMIN_MCP_TOOLS", "")),
+        help=(
+            "Suppress the three management MCP tools (set_validated_intent, "
+            "get_proxy_status, get_proxy_audit). Default: exposed."
+        ),
+    )
     args = parser.parse_args()
 
     try:
-        init_proxy(args.real_server, args.transport)
+        init_proxy(
+            args.real_server,
+            args.transport,
+            mcp_path=args.mcp_path,
+            mcp_stateless=args.mcp_stateless,
+            expose_admin_mcp_tools=not args.no_admin_mcp_tools,
+        )
     except ValueError as exc:
         # Unknown transport value coming via the env var (argparse's
         # choices= already guards the CLI path).
@@ -295,10 +387,17 @@ def main():
     print(f"  Real server: {args.real_server}", file=sys.stderr)
     print(f"  Transport:   {args.transport}", file=sys.stderr)
     print(f"  Proxy port:  http://localhost:{args.port}", file=sys.stderr)
+    print(f"  MCP path:    {args.mcp_path} ({'stateless' if args.mcp_stateless else 'stateful'})", file=sys.stderr)
+    print(f"  Admin tools: {'suppressed' if args.no_admin_mcp_tools else 'exposed'}", file=sys.stderr)
     print(f"  Discovered:  {_proxy.tool_count} tools", file=sys.stderr)
     print(f"  Auth:        {'API key required' if PROXY_API_KEY else 'OPEN (set MORPHEUS_PROXY_KEY)'}", file=sys.stderr)
 
     uvicorn.run(app, host="0.0.0.0", port=args.port)
+
+
+def _truthy(value: str) -> bool:
+    """Standard truthy-string parser for env vars: 1 / true / yes (any case)."""
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 if __name__ == "__main__":
