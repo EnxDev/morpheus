@@ -8,6 +8,8 @@
 
 Morpheus is a deterministic intent control layer for AI agents — validate, gate, and audit every action before execution.
 
+Parsing is LLM-based; decisions are not. Confidence values from the parser feed into pure-code policy logic — every gate, threshold, and authorization check is deterministic Python with no model calls in the decision path.
+
 It intercepts and validates at two independent points:
 
 - **Control 1** — what the user is asking, before it reaches the model
