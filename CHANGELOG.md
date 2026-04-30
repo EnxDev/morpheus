@@ -69,6 +69,13 @@ Surfaced by the multilingual analysis at `docs/multilingual-analysis.md` §2.6.
 
 - `morpheus/__init__.py` shim turns the directory into a regular package and provides the project docstring + `__version__`. Enables documented `from morpheus.proxy import …`, `from morpheus.policies.ibac import …`, `from morpheus.sdk import …` imports without changing how tests run from inside the directory.
 
+### Changed — license
+
+- **License changed from MIT to Apache 2.0.** The Apache 2.0 license provides
+  an explicit patent grant, which better suits Morpheus's nature as a control
+  and policy enforcement system. Prior commits remain available under their
+  original MIT terms; this change applies from this commit forward.
+
 ## [0.1.0-alpha] — 2026-03-28
 
 ### Added

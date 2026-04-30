@@ -721,4 +721,4 @@ The logged-in user is **Enzo** (Developer, employee E003). He can only see his o
 
 ## License
 
-MIT
+Morpheus is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.

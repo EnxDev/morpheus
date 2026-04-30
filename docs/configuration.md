@@ -214,7 +214,7 @@ With `read:payroll:*` as a tuple:
 The `TupleEvaluator` is a Protocol. For enterprise:
 
 ```python
-# Default (MIT, no dependencies)
+# Default (Apache 2.0, no dependencies)
 evaluator = DeterministicEvaluator()
 
 # Enterprise (same interface, different backend)
