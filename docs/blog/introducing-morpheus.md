@@ -389,7 +389,7 @@ Morpheus implements the full IBAC stack — intent parser, policy mapper, tuple 
 
 ## Try Morpheus
 
-Morpheus is open source (MIT). The backend is a FastAPI app, it includes a Python SDK, an MCP server for Claude Desktop and VS Code, an HTTP proxy for any integration, and a React UI for interactive pipeline testing.
+Morpheus is open source (Apache 2.0). The backend is a FastAPI app, it includes a Python SDK, an MCP server for Claude Desktop and VS Code, an HTTP proxy for any integration, and a React UI for interactive pipeline testing.
 
 ```bash
 git clone https://github.com/EnxDev/morpheus.git
@@ -400,6 +400,6 @@ cd morpheus && uvicorn main:app --reload --port 8000
 
 The LLM provider is auto-detected from the API key in your environment (OpenAI, Anthropic, or Ollama as a local fallback).
 
-148 tests across 15 layers. MIT license. No external dependencies for the core pipeline.
+148 tests across 15 layers. Apache 2.0 license. No external dependencies for the core pipeline.
 
 Repository: [github.com/EnxDev/morpheus](https://github.com/EnxDev/morpheus)
